@@ -42,18 +42,51 @@ impl HaikuJudge {
     }
 
     fn save(&self) {
-        let text = serde_json::to_string_pretty(&self.cache).expect("serialize cache");
+        // Re-read the on-disk cache and merge so parallel test runs don't
+        // clobber each other's newly written entries.
+        let mut on_disk: HashMap<String, bool> = if self.cache_path.exists() {
+            let text = std::fs::read_to_string(&self.cache_path).unwrap_or_default();
+            serde_json::from_str(&text).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        on_disk.extend(self.cache.iter().map(|(k, v)| (k.clone(), *v)));
+        let text = serde_json::to_string_pretty(&on_disk).expect("serialize cache");
         std::fs::write(&self.cache_path, text).expect("write haiku cache");
     }
 }
 
 fn content_hash(question: &str, output: &str) -> String {
     use sha2::{Digest, Sha256};
+    let normalized = normalize_output(output);
     let mut h = Sha256::new();
     h.update(question.as_bytes());
     h.update(b"\n---\n");
-    h.update(output.as_bytes());
+    h.update(normalized.as_bytes());
     h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Normalize dynamic content in CLI output so the same conceptual output
+/// always produces the same hash regardless of the current date or temp paths.
+///
+/// Replacements:
+/// - `YYYY-MM-DD_HH-MM_UTC±HHMM` (key creation timestamp) → `DATE_TIME`
+/// - Absolute paths under /tmp, /var, /private, /var/folders → `TMPPATH`
+fn normalize_output(output: &str) -> String {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static DATE_TIME_RE: OnceLock<Regex> = OnceLock::new();
+    static TMP_PATH_RE: OnceLock<Regex> = OnceLock::new();
+
+    let dt_re = DATE_TIME_RE
+        .get_or_init(|| Regex::new(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}_UTC[+-]\d{4}").unwrap());
+    let tmp_re =
+        TMP_PATH_RE.get_or_init(|| Regex::new(r"(?:/private)?/(?:tmp|var/folders)/\S+").unwrap());
+
+    let s = dt_re.replace_all(output, "DATE_TIME");
+    let s = tmp_re.replace_all(&s, "TMPPATH");
+    s.into_owned()
 }
 
 fn cache_file_path() -> PathBuf {

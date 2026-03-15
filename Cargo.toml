@@ -21,3 +21,4 @@ testing = []
 
 [dev-dependencies]
 tempfile = "3"
+regex = "1"
