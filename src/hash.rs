@@ -1,6 +1,6 @@
+use crate::state::State;
 use anyhow::Result;
 use sha2::{Digest, Sha256};
-use crate::state::State;
 
 /// Compute a location-invariant merkle hash of all state.
 pub fn compute_merkle_hash(state: &State) -> Result<String> {

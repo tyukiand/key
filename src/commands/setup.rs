@@ -16,10 +16,7 @@ pub fn setup(test_only_home: Option<&Path>) -> Result<()> {
     update_rc_file(&rc_path, exe_dir)?;
 
     println!("Updated {}", rc_path.display());
-    println!(
-        "Added {} to PATH in shell config.",
-        exe_dir.display()
-    );
+    println!("Added {} to PATH in shell config.", exe_dir.display());
     println!("Restart your shell or run: source {}", rc_path.display());
 
     Ok(())
@@ -38,7 +35,10 @@ fn detect_shell_rc(test_only_home: Option<&Path>) -> Result<PathBuf> {
     } else if shell.is_empty() {
         bail!("$SHELL is not set; cannot determine shell RC file");
     } else {
-        bail!("Unsupported shell '{}'; only bash and zsh are supported", shell);
+        bail!(
+            "Unsupported shell '{}'; only bash and zsh are supported",
+            shell
+        );
     };
 
     Ok(PathBuf::from(home).join(rc_name))

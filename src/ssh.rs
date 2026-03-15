@@ -84,10 +84,7 @@ pub fn pubkey_fingerprint(pub_path: &Path) -> Result<String> {
         .context("Running ssh-keygen -l")?;
 
     if !output.status.success() {
-        bail!(
-            "ssh-keygen -l failed for {}",
-            pub_path.display()
-        );
+        bail!("ssh-keygen -l failed for {}", pub_path.display());
     }
     // Output looks like: 256 SHA256:xxxxx comment (ED25519)
     let line = String::from_utf8_lossy(&output.stdout);

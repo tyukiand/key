@@ -75,8 +75,8 @@ fn load_settings(key_dir: &Path) -> Result<Settings> {
     if !path.exists() {
         return Ok(Settings::default());
     }
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("Reading {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("Reading {}", path.display()))?;
     let settings: Settings =
         serde_json::from_str(&content).with_context(|| format!("Parsing {}", path.display()))?;
     Ok(settings)

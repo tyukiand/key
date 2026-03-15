@@ -131,10 +131,7 @@ impl CmdResult {
     pub fn assert_stdout_contains(&self, needle: &str) -> &Self {
         let out = self.stdout();
         if !out.contains(needle) {
-            panic!(
-                "Expected stdout to contain {:?}\nGot: {}",
-                needle, out
-            );
+            panic!("Expected stdout to contain {:?}\nGot: {}", needle, out);
         }
         self
     }
@@ -144,10 +141,7 @@ impl CmdResult {
     pub fn assert_stderr_contains(&self, needle: &str) -> &Self {
         let err = self.stderr();
         if !err.contains(needle) {
-            panic!(
-                "Expected stderr to contain {:?}\nGot: {}",
-                needle, err
-            );
+            panic!("Expected stderr to contain {:?}\nGot: {}", needle, err);
         }
         self
     }
@@ -181,10 +175,14 @@ fn generate_canned_keys() -> PathBuf {
         // Generate with empty passphrase (-N "") — fully non-interactive
         let status = Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519",
-                "-f", key_path.to_str().unwrap(),
-                "-N", "",
-                "-C", &format!("test-key-{}", i),
+                "-t",
+                "ed25519",
+                "-f",
+                key_path.to_str().unwrap(),
+                "-N",
+                "",
+                "-C",
+                &format!("test-key-{}", i),
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

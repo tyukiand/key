@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use crate::interactive::{force_retype, pick_from_list, prompt_optional, prompt_text};
 use crate::mutation::MutationToken;
-use crate::state::{self, KeyInfo, State};
 use crate::ssh;
+use crate::state::{self, KeyInfo, State};
 
 pub struct AddOpts {
     pub key_id: Option<String>,
@@ -176,7 +176,8 @@ pub fn add(state: &mut State, opts: AddOpts, _token: &MutationToken) -> Result<(
             let canned_pub = canned_priv.with_extension("pub");
 
             std::fs::copy(canned_priv, &key_path).context("Copying canned private key")?;
-            std::fs::copy(&canned_pub, dir_path.join("key.pub")).context("Copying canned public key")?;
+            std::fs::copy(&canned_pub, dir_path.join("key.pub"))
+                .context("Copying canned public key")?;
 
             #[cfg(unix)]
             {
@@ -233,7 +234,11 @@ pub fn amend(
             key.info.password_storage = value.clone();
         }
         crate::cli::AmendField::Comment => {
-            key.info.comment = if value.is_empty() { None } else { Some(value.clone()) };
+            key.info.comment = if value.is_empty() {
+                None
+            } else {
+                Some(value.clone())
+            };
         }
     }
 
@@ -266,8 +271,7 @@ pub fn delete(state: &mut State, key_id: Option<String>, _token: &MutationToken)
         &dir_name,
     )?;
 
-    std::fs::remove_dir_all(&path)
-        .with_context(|| format!("Removing {}", path.display()))?;
+    std::fs::remove_dir_all(&path).with_context(|| format!("Removing {}", path.display()))?;
 
     println!("Deleted key: {}", dir_name);
     Ok(())

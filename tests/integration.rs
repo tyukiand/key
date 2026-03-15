@@ -124,7 +124,8 @@ fn key_add_creates_dir_and_info() {
         "--test-only-comment",
         "",
     ]);
-    r.assert_success().assert_stdout_contains("Key created: mykey_");
+    r.assert_success()
+        .assert_stdout_contains("Key created: mykey_");
 
     // key.pub and info.json must exist somewhere under the key dir
     let keys_dir = env.key_dir().join("keys");
@@ -211,12 +212,9 @@ fn key_delete_removes_dir() {
         .expect("key dir exists");
 
     let stdin = format!("{}\n", dir_name);
-    env.run_with_stdin(
-        &["delete", &dir_name],
-        stdin.as_bytes(),
-    )
-    .assert_success()
-    .assert_stdout_contains("Deleted key:");
+    env.run_with_stdin(&["delete", &dir_name], stdin.as_bytes())
+        .assert_success()
+        .assert_stdout_contains("Deleted key:");
 
     // Dir must be gone
     assert!(!keys_dir.join(&dir_name).exists(), "key dir was removed");
@@ -329,7 +327,6 @@ fn extract_hash(status_output: &str) -> String {
 // Setup — RC file modification
 // ---------------------------------------------------------------------------
 
-
 #[test]
 fn setup_creates_zshrc_block() {
     let env = TestEnv::new();
@@ -380,8 +377,10 @@ fn setup_is_idempotent() {
     ];
 
     // Run twice
-    env.run_with_stdin_and_env(&args, b"", &[("SHELL", "/bin/zsh")]).assert_success();
-    env.run_with_stdin_and_env(&args, b"", &[("SHELL", "/bin/zsh")]).assert_success();
+    env.run_with_stdin_and_env(&args, b"", &[("SHELL", "/bin/zsh")])
+        .assert_success();
+    env.run_with_stdin_and_env(&args, b"", &[("SHELL", "/bin/zsh")])
+        .assert_success();
 
     let rc = std::fs::read_to_string(fake_home.path().join(".zshrc")).expect(".zshrc created");
     let block_count = rc.matches("# [ADDED BY key] START").count();
@@ -402,10 +401,14 @@ fn setup_preserves_existing_rc_content() {
         fake_home.path().to_str().unwrap(),
         "setup",
     ];
-    env.run_with_stdin_and_env(&args, b"", &[("SHELL", "/bin/zsh")]).assert_success();
+    env.run_with_stdin_and_env(&args, b"", &[("SHELL", "/bin/zsh")])
+        .assert_success();
 
     let rc = std::fs::read_to_string(&rc_path).unwrap();
-    assert!(rc.contains("# my existing config"), "existing content preserved");
+    assert!(
+        rc.contains("# my existing config"),
+        "existing content preserved"
+    );
     assert!(rc.contains("export FOO=bar"), "existing export preserved");
     assert!(rc.contains("# __added_by_key"), "key block added");
 }

@@ -53,10 +53,7 @@ fn content_hash(question: &str, output: &str) -> String {
     h.update(question.as_bytes());
     h.update(b"\n---\n");
     h.update(output.as_bytes());
-    h.finalize()
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect()
+    h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 fn cache_file_path() -> PathBuf {
@@ -81,7 +78,9 @@ fn call_claude_cli(question: &str, output: &str) -> bool {
              (it is the same tool running these tests).",
         );
 
-    let text = String::from_utf8_lossy(&result.stdout).trim().to_uppercase();
+    let text = String::from_utf8_lossy(&result.stdout)
+        .trim()
+        .to_uppercase();
     eprintln!("[haiku_judge] response: {:?}", text);
     text.contains("PASS")
 }

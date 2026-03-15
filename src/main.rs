@@ -78,7 +78,11 @@ fn run() -> Result<()> {
             commands::key::pubkey(&state, key_id)?;
         }
 
-        Command::Amend { field, value, key_id } => {
+        Command::Amend {
+            field,
+            value,
+            key_id,
+        } => {
             let token = MutationToken::acquire(cli.read_only)?;
             commands::key::amend(&mut state, key_id, field, value, &token)?;
         }
@@ -114,4 +118,3 @@ fn resolve_key_dir(override_dir: &Option<PathBuf>) -> Result<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     Ok(PathBuf::from(home).join(".key"))
 }
-

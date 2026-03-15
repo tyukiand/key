@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use dialoguer::{Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Select};
 use std::io::{BufRead, Write};
 
 /// Present a numbered list and return the selected index.

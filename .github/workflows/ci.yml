@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: rust:bookworm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install openssh-client
+        run: apt-get update -qq && apt-get install -y -qq openssh-client
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run tests
+        run: cargo test --features testing
