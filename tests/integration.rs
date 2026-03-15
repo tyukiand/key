@@ -490,7 +490,14 @@ fn haiku_user_list_looks_reasonable() {
     env.run(&["user", "add", "alice@github"]).assert_success();
     env.run(&["user", "add", "bob@work"]).assert_success();
 
-    let output = env.run(&["user", "list"]).stdout();
+    let output = env
+        .run(&[
+            "--test-only-date",
+            "1970-01-01_00-00_UTC+0000",
+            "user",
+            "list",
+        ])
+        .stdout();
     let mut judge = HaikuJudge::load();
     assert!(
         judge.judge(
@@ -507,6 +514,8 @@ fn haiku_status_looks_reasonable() {
     let env = TestEnv::new();
     env.run(&["user", "add", "alice@github"]).assert_success();
     env.run(&[
+        "--test-only-date",
+        "1970-01-01_00-00_UTC+0000",
         "add",
         "mykey",
         "--test-only-user",
@@ -518,7 +527,9 @@ fn haiku_status_looks_reasonable() {
     ])
     .assert_success();
 
-    let output = env.run(&["status"]).stdout();
+    let output = env
+        .run(&["--test-only-date", "1970-01-01_00-00_UTC+0000", "status"])
+        .stdout();
     let mut judge = HaikuJudge::load();
     assert!(
         judge.judge(
@@ -534,11 +545,15 @@ fn haiku_status_looks_reasonable() {
 #[test]
 fn haiku_setup_output_looks_reasonable() {
     let env = TestEnv::new();
-    let fake_home = tempfile::tempdir().expect("temp home");
+    std::fs::create_dir_all("/tmp/key-haiku-setup-test-home").expect("create fixed fake home dir");
 
     let args = [
+        "--test-only-date",
+        "1970-01-01_00-00_UTC+0000",
         "--test-only-home",
-        fake_home.path().to_str().unwrap(),
+        "/tmp/key-haiku-setup-test-home",
+        "--test-only-exe-dir",
+        "/test-exe-dir",
         "setup",
     ];
     let output = env
@@ -561,6 +576,8 @@ fn haiku_setup_output_looks_reasonable() {
 fn haiku_key_list_verbose_looks_reasonable() {
     let env = TestEnv::new();
     env.run(&[
+        "--test-only-date",
+        "1970-01-01_00-00_UTC+0000",
         "add",
         "work-key",
         "--test-only-user",
@@ -572,7 +589,14 @@ fn haiku_key_list_verbose_looks_reasonable() {
     ])
     .assert_success();
 
-    let output = env.run(&["list", "-v"]).stdout();
+    let output = env
+        .run(&[
+            "--test-only-date",
+            "1970-01-01_00-00_UTC+0000",
+            "list",
+            "-v",
+        ])
+        .stdout();
     let mut judge = HaikuJudge::load();
     assert!(
         judge.judge(

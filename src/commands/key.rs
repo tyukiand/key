@@ -17,6 +17,8 @@ pub struct AddOpts {
     pub test_password_storage: Option<String>,
     #[cfg(feature = "testing")]
     pub test_comment: Option<String>,
+    #[cfg(feature = "testing")]
+    pub test_date: Option<String>,
 }
 
 pub fn print_pubkey(key_path: &std::path::Path) -> Result<()> {
@@ -114,6 +116,11 @@ pub fn add(state: &mut State, opts: AddOpts, _token: &MutationToken) -> Result<(
     let comment = prompt_optional("Comment (optional)")?;
 
     // 5. Build full dir name
+    #[cfg(feature = "testing")]
+    let date_str = opts
+        .test_date
+        .unwrap_or_else(|| state::current_date_string());
+    #[cfg(not(feature = "testing"))]
     let date_str = state::current_date_string();
     let dir_name = format!("{}_{}", key_id, date_str);
     let dir_path = state.keys_path().join(&dir_name);

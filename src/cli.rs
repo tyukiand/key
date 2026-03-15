@@ -41,6 +41,16 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "DIR", hide = true)]
     pub test_only_home: Option<std::path::PathBuf>,
 
+    /// Override exe directory used by `key setup` (test use only)
+    #[cfg(feature = "testing")]
+    #[arg(long, global = true, value_name = "DIR", hide = true)]
+    pub test_only_exe_dir: Option<std::path::PathBuf>,
+
+    /// Override the current date string used by `key add` (test use only)
+    #[cfg(feature = "testing")]
+    #[arg(long, global = true, value_name = "DATE", hide = true)]
+    pub test_only_date: Option<String>,
+
     #[command(subcommand)]
     pub command: Command,
 }

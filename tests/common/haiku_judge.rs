@@ -58,35 +58,11 @@ impl HaikuJudge {
 
 fn content_hash(question: &str, output: &str) -> String {
     use sha2::{Digest, Sha256};
-    let normalized = normalize_output(output);
     let mut h = Sha256::new();
     h.update(question.as_bytes());
     h.update(b"\n---\n");
-    h.update(normalized.as_bytes());
+    h.update(output.as_bytes());
     h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-/// Normalize dynamic content in CLI output so the same conceptual output
-/// always produces the same hash regardless of the current date or temp paths.
-///
-/// Replacements:
-/// - `YYYY-MM-DD_HH-MM_UTC±HHMM` (key creation timestamp) → `DATE_TIME`
-/// - Absolute paths under /tmp, /var, /private, /var/folders → `TMPPATH`
-fn normalize_output(output: &str) -> String {
-    use regex::Regex;
-    use std::sync::OnceLock;
-
-    static DATE_TIME_RE: OnceLock<Regex> = OnceLock::new();
-    static TMP_PATH_RE: OnceLock<Regex> = OnceLock::new();
-
-    let dt_re = DATE_TIME_RE
-        .get_or_init(|| Regex::new(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}_UTC[+-]\d{4}").unwrap());
-    let tmp_re =
-        TMP_PATH_RE.get_or_init(|| Regex::new(r"(?:/private)?/(?:tmp|var/folders)/\S+").unwrap());
-
-    let s = dt_re.replace_all(output, "DATE_TIME");
-    let s = tmp_re.replace_all(&s, "TMPPATH");
-    s.into_owned()
 }
 
 fn cache_file_path() -> PathBuf {
@@ -95,6 +71,15 @@ fn cache_file_path() -> PathBuf {
 }
 
 fn call_claude_cli(question: &str, output: &str) -> bool {
+    if std::env::var("HAIKU_OFFLINE").is_ok() {
+        panic!(
+            "Haiku cache miss — run haiku tests locally with `claude` on PATH \
+             to populate tests/haiku_cache.json, then commit it.\n\
+             (Tried to call claude for question: {})",
+            question
+        );
+    }
+
     let prompt = format!(
         "You are a test oracle for a CLI tool called `key` (SSH key manager).\n\
          Answer with exactly one word: PASS or FAIL — nothing else.\n\n\
@@ -106,10 +91,17 @@ fn call_claude_cli(question: &str, output: &str) -> bool {
     let result = Command::new("claude")
         .args(["--model", "claude-haiku-4-5-20251001", "-p", &prompt])
         .output()
-        .expect(
-            "Failed to run `claude` CLI. Make sure `claude` is on PATH \
-             (it is the same tool running these tests).",
-        );
+        .unwrap_or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                panic!(
+                    "Haiku cache miss — run haiku tests locally with `claude` on PATH \
+                     to populate tests/haiku_cache.json, then commit it.\n\
+                     (Tried to call claude for question: {})",
+                    question
+                );
+            }
+            panic!("Failed to run claude: {}", e);
+        });
 
     let text = String::from_utf8_lossy(&result.stdout)
         .trim()

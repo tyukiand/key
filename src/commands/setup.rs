@@ -5,11 +5,16 @@ const MARKER: &str = "# __added_by_key";
 const START_LINE: &str = "# [ADDED BY key] START # __added_by_key";
 const END_LINE: &str = "# [ADDED by key] END   # __added_by_key";
 
-pub fn setup(test_only_home: Option<&Path>) -> Result<()> {
-    let exe_path = std::env::current_exe().context("Failed to determine executable path")?;
-    let exe_dir = exe_path
-        .parent()
-        .context("Executable has no parent directory")?;
+pub fn setup(test_only_home: Option<&Path>, test_only_exe_dir: Option<&Path>) -> Result<()> {
+    let exe_path_buf;
+    let exe_dir: &Path = if let Some(dir) = test_only_exe_dir {
+        dir
+    } else {
+        exe_path_buf = std::env::current_exe().context("Failed to determine executable path")?;
+        exe_path_buf
+            .parent()
+            .context("Executable has no parent directory")?
+    };
 
     let rc_path = detect_shell_rc(test_only_home)?;
 
