@@ -37,6 +37,15 @@ pub fn generate_key(key_path: &Path, comment: &str) -> Result<()> {
     if !status.success() {
         bail!("ssh-keygen exited with status {}", status);
     }
+
+    // Defence-in-depth: enforce 0o600 regardless of umask or ssh-keygen version.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
+            .context("Enforcing 0o600 on private key")?;
+    }
+
     Ok(())
 }
 

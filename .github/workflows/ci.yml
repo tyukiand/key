@@ -13,11 +13,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install openssh-client
-        run: apt-get update -qq && apt-get install -y -qq openssh-client
-
-      - name: Check formatting
-        run: cargo fmt --check
-
-      - name: Run tests
-        run: cargo test --features testing
+      - name: Run CI
+        run: bash ci.sh

@@ -51,6 +51,15 @@ impl State {
         std::fs::create_dir_all(key_dir.join("keys"))
             .with_context(|| format!("Creating keys subdir"))?;
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(key_dir, std::fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("Setting permissions on {}", key_dir.display()))?;
+            std::fs::set_permissions(key_dir.join("keys"), std::fs::Permissions::from_mode(0o700))
+                .context("Setting permissions on keys subdir")?;
+        }
+
         let settings = load_settings(key_dir)?;
         let keys = load_keys(key_dir)?;
 

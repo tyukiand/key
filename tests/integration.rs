@@ -414,6 +414,73 @@ fn setup_preserves_existing_rc_content() {
 }
 
 // ---------------------------------------------------------------------------
+// File-system permission tests
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn permissions_key_dir_is_0700() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    // Any command that loads state will create the directories.
+    env.run(&["list"]).assert_success();
+    let mode = std::fs::metadata(env.key_dir())
+        .expect("key dir metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700, "key dir must be 0o700, got {:o}", mode);
+}
+
+#[test]
+#[cfg(unix)]
+fn permissions_keys_subdir_is_0700() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    env.run(&["list"]).assert_success();
+    let keys_dir = env.key_dir().join("keys");
+    let mode = std::fs::metadata(&keys_dir)
+        .expect("keys subdir metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700, "keys subdir must be 0o700, got {:o}", mode);
+}
+
+#[test]
+#[cfg(unix)]
+fn permissions_private_key_is_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    env.run(&[
+        "add",
+        "perm-key",
+        "--test-only-user",
+        "alice@test",
+        "--test-only-password-storage",
+        "vault",
+        "--test-only-comment",
+        "",
+    ])
+    .assert_success();
+
+    let keys_dir = env.key_dir().join("keys");
+    let key_file = std::fs::read_dir(&keys_dir)
+        .expect("read keys dir")
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().is_dir())
+        .map(|e| e.path().join("key"))
+        .expect("key subdir");
+
+    let mode = std::fs::metadata(&key_file)
+        .expect("private key metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "private key must be 0o600, got {:o}", mode);
+}
+
+// ---------------------------------------------------------------------------
 // Haiku-judged semantic tests
 // ---------------------------------------------------------------------------
 
