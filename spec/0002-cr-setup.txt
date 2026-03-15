@@ -1,0 +1,15 @@
+Implement
+
+./key setup
+
+assuming that `./key` will be launched by finding it in the file system and launching it directly (without PATH)
+
+It should figure out whether its bash or zsh (if necessary)
+
+And then it should add the location of the `key` executable to `$PATH`, and add / update the lines marked with __added_by_key:
+(i.e. delete previous, add new ones):
+
+# [ADDED BY key] START # __added_by_key
+export PATH=stuff...   # __added_by_key
+# [ADDED by key] END   # __added_by_key
+

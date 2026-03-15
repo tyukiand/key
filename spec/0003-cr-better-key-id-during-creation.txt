@@ -1,0 +1,8 @@
+When creating a new key, we must show the full key id (with date) before letting the ssh-add ask for password, because the user might need the full id to save it in the password manager.
+
+So:
+  - get the id
+  - compute the date
+  - display clearly "Creating <key-id>_<date>"
+  - only then start ssh-keygen that asks for password
+

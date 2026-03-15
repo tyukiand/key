@@ -1,0 +1,52 @@
+use anyhow::Result;
+use sha2::{Digest, Sha256};
+use crate::state::State;
+
+/// Compute a location-invariant merkle hash of all state.
+pub fn compute_merkle_hash(state: &State) -> Result<String> {
+    let mut leaf_hashes: Vec<Vec<u8>> = Vec::new();
+
+    // 1. Users (sorted alphabetically)
+    let mut users = state.settings.users.clone();
+    users.sort();
+    for user in &users {
+        leaf_hashes.push(sha256_bytes(user.as_bytes()));
+    }
+
+    // 2. Key dirs (already sorted by dir_name in State::load)
+    for key in &state.keys {
+        // Hash dir name (relative, not absolute)
+        leaf_hashes.push(sha256_bytes(key.dir_name.as_bytes()));
+
+        // Hash info.json content
+        let info_content = std::fs::read(key.path.join("info.json"))?;
+        leaf_hashes.push(sha256_bytes(&info_content));
+
+        // Hash key.pub content
+        let pub_path = key.path.join("key.pub");
+        if pub_path.exists() {
+            let pub_content = std::fs::read(&pub_path)?;
+            leaf_hashes.push(sha256_bytes(&pub_content));
+        }
+    }
+
+    // Combine all leaf hashes
+    let mut combined = Sha256::new();
+    for leaf in &leaf_hashes {
+        combined.update(leaf);
+    }
+    let result = combined.finalize();
+    Ok(hex::encode_bytes(&result))
+}
+
+fn sha256_bytes(data: &[u8]) -> Vec<u8> {
+    let mut h = Sha256::new();
+    h.update(data);
+    h.finalize().to_vec()
+}
+
+mod hex {
+    pub fn encode_bytes(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+}
