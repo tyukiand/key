@@ -1,0 +1,93 @@
+Security review — decisions and rationale
+2026-03-15
+
+This document records the outcome of a security review of the `key` tool and
+explicitly states which practices are intentional, which non-issues are
+acknowledged, and which fixes were applied.
+
+───────────────────────────────────────────────────────────────────────────────
+THINGS WE KEEP AND EXPLICITLY WANT
+───────────────────────────────────────────────────────────────────────────────
+
+1. Passphrase handling fully delegated to ssh-keygen / ssh-add
+   ssh-keygen is invoked without -N, so it prompts the user interactively.
+   The passphrase never flows through this program's memory — not as a
+   string, not as a byte slice, not at all.  This is intentional and must
+   stay this way.  Do not add -N or any other mechanism that routes the
+   passphrase through this process.
+
+2. No passphrase passed via CLI arguments
+   Passphrases passed on the command line appear in the shell history and in
+   /proc/<pid>/cmdline.  We never do this.  All user-entered metadata is
+   collected via interactive stdin prompts, never via positional arguments or
+   flags.
+
+3. No re-implementation of cryptographic primitives
+   All key generation and agent interaction is delegated to the system
+   ssh-keygen and ssh-add binaries.  We are a thin porcelain layer; we do
+   not touch OpenSSL, libsodium, or any crypto crate for key material.
+
+4. No temporary files containing key material
+   Generated keys go directly to their final location under ~/.key/keys/.
+   There are no intermediate scratch files, pipes, or environment variables
+   carrying key material through this process.
+
+5. MutationToken — explicit opt-in for writes
+   All state-mutating commands require a MutationToken, which cannot be
+   acquired when --read-only is passed.  This prevents accidental mutation
+   in scripts that should only inspect state.
+
+6. Force-retype confirmation for irreversible operations
+   Deleting a key or a user requires typing the full name of the entity
+   being deleted.  This guards against accidental data loss with no undo.
+
+7. Key collision detection
+   Creating a key with a key-id that already exists is an error.  The
+   directory is never silently overwritten.
+
+8. test-only features are compile-time gated
+   All flags and code paths used exclusively in tests are behind
+   #[cfg(feature = "testing")].  The release binary cannot exercise them.
+
+───────────────────────────────────────────────────────────────────────────────
+ACKNOWLEDGED NON-ISSUES
+───────────────────────────────────────────────────────────────────────────────
+
+A. User freedom to create unpassworded keys
+   When ssh-keygen prompts for a passphrase and the user presses Enter twice,
+   the key is created without a passphrase.  This is a deal between the user
+   and ssh-keygen — it is ssh-keygen's documented behaviour, not a bug in
+   this tool.  We do not try to second-guess it.  Adding a post-hoc check
+   (e.g. attempting to use the key without a passphrase and interpreting
+   success as "unprotected") would be fragile and paternalistic.  The
+   password_storage field in info.json is the user's own reminder of where
+   they stored the passphrase; it is not a security control.
+
+B. Metadata strings (key_id, comment, password_storage) not zeroed
+   These three strings are very low-sensitivity data.  They are:
+     - already written in plaintext to info.json on disk
+     - already printed to the terminal during key creation
+     - not secret by any reasonable definition
+   Applying zeroize to them would add complexity and a dependency for no
+   security benefit.  We explicitly choose not to do this.
+
+───────────────────────────────────────────────────────────────────────────────
+FIXES APPLIED (this review)
+───────────────────────────────────────────────────────────────────────────────
+
+1. Directory permissions enforced to 0o700
+   ~/.key/ and ~/.key/keys/ are now explicitly set to 0o700 (owner rwx,
+   no group or world access) immediately after creation.  Previously we
+   relied on the process umask, which could leave the directories readable
+   by other users on the system, exposing the info.json metadata files and
+   the directory listing of key names.
+
+2. Private key file permissions enforced to 0o600 after generation
+   After ssh-keygen exits, the private key file is explicitly set to 0o600
+   (owner rw, no group or world).  ssh-keygen already does this by default,
+   but we enforce it ourselves as a defence-in-depth measure.  If ssh-keygen
+   ever behaves unexpectedly, we catch it immediately rather than silently
+   leaving a world-readable key.
+
+Both fixes are covered by integration tests (permissions_key_dir_is_0700,
+permissions_keys_subdir_is_0700, permissions_private_key_is_0600).
