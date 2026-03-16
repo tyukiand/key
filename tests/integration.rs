@@ -368,7 +368,7 @@ fn setup_preserves_existing_rc_content() {
 #[test]
 #[cfg(unix)]
 fn permissions_key_dir_is_0700() {
-    use key::effects::{Effects, RealEffects};
+    use key::effects::RealEffects;
     use std::os::unix::fs::PermissionsExt;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -386,7 +386,7 @@ fn permissions_key_dir_is_0700() {
 #[test]
 #[cfg(unix)]
 fn permissions_keys_subdir_is_0700() {
-    use key::effects::{Effects, RealEffects};
+    use key::effects::RealEffects;
     use std::os::unix::fs::PermissionsExt;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -400,4 +400,219 @@ fn permissions_keys_subdir_is_0700() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o700, "keys subdir must be 0o700, got {:o}", mode);
+}
+
+// ---------------------------------------------------------------------------
+// Pubkey command tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pubkey_prints_key_content() {
+    let fx = CannedEffects::new()
+        .with_pick_answers(vec![0])
+        .with_prompt_answers(vec!["vault".into(), "".into()]);
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    key::commands::user::add(&mut state, "alice@test".into(), &fx, &token).unwrap();
+    key::commands::key::add(&mut state, Some("mykey".into()), &fx, &token).unwrap();
+
+    state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    fx.clear_output();
+    key::commands::key::pubkey(&state, Some("mykey".into()), &fx).unwrap();
+
+    let output = fx.output();
+    assert!(output.contains("--- public key start (do not copy this line) ---"));
+    assert!(output.contains("ssh-ed25519 AAAA"));
+    assert!(output.contains("--- public key end (do not copy this line) ---"));
+}
+
+// ---------------------------------------------------------------------------
+// Amend command tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn amend_comment_updates_verbose_list() {
+    use key::cli::AmendField;
+
+    let fx = CannedEffects::new()
+        .with_pick_answers(vec![0])
+        .with_prompt_answers(vec!["vault".into(), "".into()]);
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    key::commands::user::add(&mut state, "alice@test".into(), &fx, &token).unwrap();
+    key::commands::key::add(&mut state, Some("amend-key".into()), &fx, &token).unwrap();
+
+    state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    fx.clear_output();
+
+    key::commands::key::amend(
+        &mut state,
+        Some("amend-key".into()),
+        AmendField::Comment,
+        "my note".into(),
+        &fx,
+        &token,
+    )
+    .unwrap();
+
+    state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    fx.clear_output();
+    key::commands::key::list(&state, true, &fx).unwrap();
+
+    let output = fx.output();
+    assert!(output.contains("amend-key"));
+    assert!(output.contains("my note"));
+}
+
+#[test]
+fn amend_password_storage_updates_verbose_list() {
+    use key::cli::AmendField;
+
+    let fx = CannedEffects::new()
+        .with_pick_answers(vec![0])
+        .with_prompt_answers(vec!["vault".into(), "".into()]);
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    key::commands::user::add(&mut state, "alice@test".into(), &fx, &token).unwrap();
+    key::commands::key::add(&mut state, Some("pw-key".into()), &fx, &token).unwrap();
+
+    state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    fx.clear_output();
+
+    key::commands::key::amend(
+        &mut state,
+        Some("pw-key".into()),
+        AmendField::PasswordStorage,
+        "1password".into(),
+        &fx,
+        &token,
+    )
+    .unwrap();
+
+    state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    fx.clear_output();
+    key::commands::key::list(&state, true, &fx).unwrap();
+
+    let output = fx.output();
+    assert!(output.contains("pw-key"));
+    assert!(output.contains("1password"));
+}
+
+#[test]
+fn amend_empty_string_clears_comment() {
+    use key::cli::AmendField;
+
+    let fx = CannedEffects::new()
+        .with_pick_answers(vec![0])
+        .with_prompt_answers(vec!["vault".into(), "original comment".into()]);
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    key::commands::user::add(&mut state, "alice@test".into(), &fx, &token).unwrap();
+    key::commands::key::add(&mut state, Some("clear-key".into()), &fx, &token).unwrap();
+
+    state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    fx.clear_output();
+
+    key::commands::key::amend(
+        &mut state,
+        Some("clear-key".into()),
+        AmendField::Comment,
+        "".into(),
+        &fx,
+        &token,
+    )
+    .unwrap();
+
+    state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    fx.clear_output();
+    key::commands::key::list(&state, true, &fx).unwrap();
+
+    let output = fx.output();
+    assert!(!output.contains("original comment"));
+}
+
+// ---------------------------------------------------------------------------
+// Activate command tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn activate_prints_key_metadata() {
+    let fx = CannedEffects::new()
+        .with_pick_answers(vec![0])
+        .with_prompt_answers(vec!["bitwarden".into(), "my note".into()]);
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    key::commands::user::add(&mut state, "alice@test".into(), &fx, &token).unwrap();
+    key::commands::key::add(&mut state, Some("testkey".into()), &fx, &token).unwrap();
+
+    state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    fx.clear_output();
+    key::commands::activate::activate(&state, Some("testkey".into()), &fx).unwrap();
+
+    let output = fx.output();
+    assert!(output.contains("testkey"));
+    assert!(output.contains("bitwarden"));
+    assert!(output.contains("my note"));
+}
+
+#[test]
+fn activate_warns_if_already_active() {
+    let fx = CannedEffects::new()
+        .with_pick_answers(vec![0])
+        .with_prompt_answers(vec!["vault".into(), "".into()]);
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    key::commands::user::add(&mut state, "alice@test".into(), &fx, &token).unwrap();
+    key::commands::key::add(&mut state, Some("active-key".into()), &fx, &token).unwrap();
+
+    state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+
+    // Get the fingerprint and mock agent_keys
+    let key = &state.keys[0];
+    let pub_path = key.path.join("key.pub");
+    let fingerprint = fx.ssh_keygen_fingerprint(&pub_path).unwrap();
+    let agent_keys_str = format!("256 {} alice@test (ED25519)\n", fingerprint);
+    fx.set_agent_keys(&agent_keys_str);
+
+    fx.clear_output();
+    key::commands::activate::activate(&state, Some("active-key".into()), &fx).unwrap();
+
+    let err_output = fx.err_output();
+    assert!(err_output.contains("already active"));
+}
+
+// ---------------------------------------------------------------------------
+// Status command - ACTIVE key tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn status_shows_active_key() {
+    let fx = CannedEffects::new()
+        .with_pick_answers(vec![0])
+        .with_prompt_answers(vec!["vault".into(), "".into()]);
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    key::commands::user::add(&mut state, "alice@test".into(), &fx, &token).unwrap();
+    key::commands::key::add(&mut state, Some("active-status-key".into()), &fx, &token).unwrap();
+
+    state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+
+    // Get the fingerprint and mock agent_keys to make the key active
+    let key = &state.keys[0];
+    let pub_path = key.path.join("key.pub");
+    let fingerprint = fx.ssh_keygen_fingerprint(&pub_path).unwrap();
+    let agent_keys_str = format!("256 {} alice@test (ED25519)\n", fingerprint);
+    fx.set_agent_keys(&agent_keys_str);
+
+    fx.clear_output();
+    key::commands::status::status(&state, &fx).unwrap();
+
+    assert!(fx.output().contains("ACTIVE"));
 }

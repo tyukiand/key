@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
+#[cfg(feature = "testing")]
 use std::cell::RefCell;
+#[cfg(feature = "testing")]
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -13,7 +15,6 @@ pub trait Effects {
     fn remove_dir_all(&self, path: &Path) -> Result<()>;
     fn read_dir_names(&self, path: &Path) -> Result<Vec<String>>;
     fn set_permissions(&self, path: &Path, mode: u32) -> Result<()>;
-    fn copy_file(&self, from: &Path, to: &Path) -> Result<()>;
     fn println(&self, msg: &str);
     fn eprintln(&self, msg: &str);
     fn pick_from_list(&self, prompt: &str, items: &[String]) -> Result<usize>;
@@ -84,12 +85,6 @@ impl Effects for RealEffects {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
                 .with_context(|| format!("Setting permissions on {}", path.display()))?;
         }
-        Ok(())
-    }
-
-    fn copy_file(&self, from: &Path, to: &Path) -> Result<()> {
-        std::fs::copy(from, to)
-            .with_context(|| format!("Copying {} to {}", from.display(), to.display()))?;
         Ok(())
     }
 
@@ -272,6 +267,7 @@ impl Effects for RealEffects {
 }
 
 // --- CannedEffects ---
+#[cfg(feature = "testing")]
 pub struct CannedEffects {
     fs: RefCell<BTreeMap<PathBuf, Vec<u8>>>,
     dirs: RefCell<BTreeSet<PathBuf>>,
@@ -283,9 +279,10 @@ pub struct CannedEffects {
     home: String,
     shell: String,
     exe_dir: PathBuf,
-    agent_keys: String,
+    agent_keys: RefCell<String>,
 }
 
+#[cfg(feature = "testing")]
 impl CannedEffects {
     pub fn new() -> Self {
         CannedEffects {
@@ -299,7 +296,7 @@ impl CannedEffects {
             home: "/fake/home".to_string(),
             shell: "/bin/zsh".to_string(),
             exe_dir: PathBuf::from("/fake/bin"),
-            agent_keys: String::new(),
+            agent_keys: RefCell::new(String::new()),
         }
     }
 
@@ -334,8 +331,12 @@ impl CannedEffects {
     }
 
     pub fn with_agent_keys(mut self, keys: &str) -> Self {
-        self.agent_keys = keys.to_string();
+        self.agent_keys = RefCell::new(keys.to_string());
         self
+    }
+
+    pub fn set_agent_keys(&self, keys: &str) {
+        *self.agent_keys.borrow_mut() = keys.to_string();
     }
 
     pub fn output(&self) -> String {
@@ -365,6 +366,7 @@ impl CannedEffects {
     }
 }
 
+#[cfg(feature = "testing")]
 impl Effects for CannedEffects {
     fn read_file(&self, path: &Path) -> Result<Vec<u8>> {
         self.fs
@@ -444,12 +446,6 @@ impl Effects for CannedEffects {
     }
 
     fn set_permissions(&self, _path: &Path, _mode: u32) -> Result<()> {
-        Ok(())
-    }
-
-    fn copy_file(&self, from: &Path, to: &Path) -> Result<()> {
-        let content = self.read_file(from)?;
-        self.write_file(to, &content)?;
         Ok(())
     }
 
@@ -534,7 +530,7 @@ impl Effects for CannedEffects {
     }
 
     fn ssh_add_list(&self) -> Result<String> {
-        Ok(self.agent_keys.clone())
+        Ok(self.agent_keys.borrow().clone())
     }
 
     fn current_date_string(&self) -> String {

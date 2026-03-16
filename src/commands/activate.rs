@@ -29,6 +29,18 @@ pub fn activate(state: &State, key_id: Option<String>, fx: &dyn Effects) -> Resu
     }
     fx.println("");
 
+    // Check if key is already active
+    let pub_path = key.path.join("key.pub");
+    let fingerprint = fx.ssh_keygen_fingerprint(&pub_path)?;
+    let agent_list = fx.ssh_add_list()?;
+    let already_active = agent_list
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .any(|fp| fp == fingerprint);
+    if already_active {
+        fx.eprintln("Note: key is already active in the SSH agent.");
+    }
+
     // Delegate to ssh-add
     fx.ssh_add(&key.path.join("key"))?;
     Ok(())

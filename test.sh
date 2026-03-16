@@ -2,4 +2,4 @@
 set -euo pipefail
 
 cargo fmt --check
-cargo test
+cargo test --features testing
