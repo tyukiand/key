@@ -28,9 +28,11 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-latest
-            artifact: key-linux-x86_64
+            platform: linux-x86_64
+          - runner: macos-13
+            platform: macos-x86_64
           - runner: macos-latest
-            artifact: key-macos-arm64
+            platform: macos-arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -39,13 +41,18 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Copy binary to artifact name
-        run: cp target/release/key ${{ matrix.artifact }}
+      - name: Package zip
+        run: |
+          name="key-${{ matrix.platform }}"
+          mkdir -p "$name/bin/${{ matrix.platform }}"
+          cp target/release/key "$name/bin/${{ matrix.platform }}/key"
+          cp release/README.md "$name/README.md"
+          zip -r "$name.zip" "$name"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          name: key-${{ matrix.platform }}
+          path: key-${{ matrix.platform }}.zip
 
   release:
     needs: build
@@ -63,6 +70,10 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: key-macos-x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
           name: key-macos-arm64
 
       - name: Get tag annotation
@@ -77,5 +88,6 @@ jobs:
         with:
           body: ${{ steps.tag_message.outputs.body }}
           files: |
-            key-linux-x86_64
-            key-macos-arm64
+            key-linux-x86_64.zip
+            key-macos-x86_64.zip
+            key-macos-arm64.zip
