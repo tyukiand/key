@@ -1,37 +1,34 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
+use crate::effects::Effects;
+
 const MARKER: &str = "# __added_by_key";
 const START_LINE: &str = "# [ADDED BY key] START # __added_by_key";
 const END_LINE: &str = "# [ADDED by key] END   # __added_by_key";
 
-pub fn setup(test_only_home: Option<&Path>, test_only_exe_dir: Option<&Path>) -> Result<()> {
-    let exe_path_buf;
-    let exe_dir: &Path = if let Some(dir) = test_only_exe_dir {
-        dir
-    } else {
-        exe_path_buf = std::env::current_exe().context("Failed to determine executable path")?;
-        exe_path_buf
-            .parent()
-            .context("Executable has no parent directory")?
-    };
+pub fn setup(fx: &dyn Effects) -> Result<()> {
+    let exe_dir = fx.current_exe_dir()?;
+    let rc_path = detect_shell_rc(fx)?;
 
-    let rc_path = detect_shell_rc(test_only_home)?;
+    update_rc_file(&rc_path, &exe_dir, fx)?;
 
-    update_rc_file(&rc_path, exe_dir)?;
-
-    println!("Updated {}", rc_path.display());
-    println!("Added {} to PATH in shell config.", exe_dir.display());
-    println!("Restart your shell or run: source {}", rc_path.display());
+    fx.println(&format!("Updated {}", rc_path.display()));
+    fx.println(&format!(
+        "Added {} to PATH in shell config.",
+        exe_dir.display()
+    ));
+    fx.println(&format!(
+        "Restart your shell or run: source {}",
+        rc_path.display()
+    ));
 
     Ok(())
 }
 
-fn detect_shell_rc(test_only_home: Option<&Path>) -> Result<PathBuf> {
-    let shell = std::env::var("SHELL").unwrap_or_default();
-    let home = test_only_home
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()));
+fn detect_shell_rc(fx: &dyn Effects) -> Result<PathBuf> {
+    let shell = fx.shell_env()?;
+    let home = fx.home_dir()?;
 
     let rc_name = if shell.contains("zsh") {
         ".zshrc"
@@ -49,9 +46,9 @@ fn detect_shell_rc(test_only_home: Option<&Path>) -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(rc_name))
 }
 
-fn update_rc_file(rc_path: &Path, exe_dir: &Path) -> Result<()> {
-    let existing = if rc_path.exists() {
-        std::fs::read_to_string(rc_path)
+fn update_rc_file(rc_path: &Path, exe_dir: &Path, fx: &dyn Effects) -> Result<()> {
+    let existing = if fx.path_exists(rc_path) {
+        fx.read_file_string(rc_path)
             .with_context(|| format!("Failed to read {}", rc_path.display()))?
     } else {
         String::new()
@@ -75,7 +72,7 @@ fn update_rc_file(rc_path: &Path, exe_dir: &Path) -> Result<()> {
         format!("{}\n{}", cleaned, new_block)
     };
 
-    std::fs::write(rc_path, &result)
+    fx.write_file(rc_path, result.as_bytes())
         .with_context(|| format!("Failed to write {}", rc_path.display()))?;
 
     Ok(())

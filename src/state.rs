@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::effects::Effects;
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Settings {
     pub users: Vec<String>,
@@ -45,23 +47,19 @@ pub struct State {
 }
 
 impl State {
-    pub fn load(key_dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(key_dir)
+    pub fn load(key_dir: &Path, fx: &dyn Effects) -> Result<Self> {
+        fx.create_dir_all(key_dir)
             .with_context(|| format!("Creating key dir {}", key_dir.display()))?;
-        std::fs::create_dir_all(key_dir.join("keys"))
+        fx.create_dir_all(&key_dir.join("keys"))
             .with_context(|| format!("Creating keys subdir"))?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(key_dir, std::fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("Setting permissions on {}", key_dir.display()))?;
-            std::fs::set_permissions(key_dir.join("keys"), std::fs::Permissions::from_mode(0o700))
-                .context("Setting permissions on keys subdir")?;
-        }
+        fx.set_permissions(key_dir, 0o700)
+            .with_context(|| format!("Setting permissions on {}", key_dir.display()))?;
+        fx.set_permissions(&key_dir.join("keys"), 0o700)
+            .context("Setting permissions on keys subdir")?;
 
-        let settings = load_settings(key_dir)?;
-        let keys = load_keys(key_dir)?;
+        let settings = load_settings(key_dir, fx)?;
+        let keys = load_keys(key_dir, fx)?;
 
         Ok(State {
             key_dir: key_dir.to_path_buf(),
@@ -70,8 +68,10 @@ impl State {
         })
     }
 
-    pub fn save_settings(&self) -> Result<()> {
-        save_settings(&self.key_dir, &self.settings)
+    pub fn save_settings(&self, fx: &dyn Effects) -> Result<()> {
+        let path = self.key_dir.join("settings.json");
+        let content = serde_json::to_string_pretty(&self.settings)?;
+        fx.write_file(&path, content.as_bytes())
     }
 
     pub fn keys_path(&self) -> PathBuf {
@@ -79,53 +79,39 @@ impl State {
     }
 }
 
-fn load_settings(key_dir: &Path) -> Result<Settings> {
+fn load_settings(key_dir: &Path, fx: &dyn Effects) -> Result<Settings> {
     let path = key_dir.join("settings.json");
-    if !path.exists() {
+    if !fx.path_exists(&path) {
         return Ok(Settings::default());
     }
-    let content =
-        std::fs::read_to_string(&path).with_context(|| format!("Reading {}", path.display()))?;
+    let content = fx
+        .read_file_string(&path)
+        .with_context(|| format!("Reading {}", path.display()))?;
     let settings: Settings =
         serde_json::from_str(&content).with_context(|| format!("Parsing {}", path.display()))?;
     Ok(settings)
 }
 
-fn save_settings(key_dir: &Path, settings: &Settings) -> Result<()> {
-    let path = key_dir.join("settings.json");
-    let content = serde_json::to_string_pretty(settings)?;
-    std::fs::write(&path, content).with_context(|| format!("Writing {}", path.display()))?;
-    Ok(())
-}
-
-fn load_keys(key_dir: &Path) -> Result<Vec<KeyDir>> {
+fn load_keys(key_dir: &Path, fx: &dyn Effects) -> Result<Vec<KeyDir>> {
     let keys_path = key_dir.join("keys");
     let mut keys = Vec::new();
 
-    let entries = match std::fs::read_dir(&keys_path) {
-        Ok(e) => e,
+    let names = match fx.read_dir_names(&keys_path) {
+        Ok(n) => n,
         Err(_) => return Ok(keys),
     };
 
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let dir_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-        if dir_name.is_empty() {
+    for dir_name in names {
+        let path = keys_path.join(&dir_name);
+        if !fx.is_dir(&path) {
             continue;
         }
         let info_path = path.join("info.json");
-        if !info_path.exists() {
+        if !fx.path_exists(&info_path) {
             continue;
         }
-        let content = std::fs::read_to_string(&info_path)
+        let content = fx
+            .read_file_string(&info_path)
             .with_context(|| format!("Reading {}", info_path.display()))?;
         let info: KeyInfo = serde_json::from_str(&content)
             .with_context(|| format!("Parsing {}", info_path.display()))?;
@@ -140,19 +126,8 @@ fn load_keys(key_dir: &Path) -> Result<Vec<KeyDir>> {
     Ok(keys)
 }
 
-pub fn write_info(dir: &Path, info: &KeyInfo) -> Result<()> {
+pub fn write_info(dir: &Path, info: &KeyInfo, fx: &dyn Effects) -> Result<()> {
     let path = dir.join("info.json");
     let content = serde_json::to_string_pretty(info)?;
-    std::fs::write(&path, content).with_context(|| format!("Writing {}", path.display()))?;
-    Ok(())
-}
-
-/// Returns the date string for a key directory name in the format:
-/// `YYYY-MM-DD_HH-MM_UTC±HHMM` (colon stripped from offset, safe for filenames)
-pub fn current_date_string() -> String {
-    use chrono::Local;
-    let now = Local::now();
-    // Format: 2026-03-15_14-32_UTC+0530
-    // %z gives +0530 (no colon), already safe for filenames
-    now.format("%Y-%m-%d_%H-%M_UTC%z").to_string()
+    fx.write_file(&path, content.as_bytes())
 }

@@ -3,6 +3,10 @@ name = "key"
 version = "2.0.7"
 edition = "2021"
 
+[lib]
+name = "key"
+path = "src/lib.rs"
+
 [[bin]]
 name = "key"
 path = "src/main.rs"
@@ -15,9 +19,6 @@ chrono = { version = "0.4", features = ["clock"] }
 sha2 = "0.10"
 dialoguer = "0.11"
 anyhow = "1"
-
-[features]
-testing = []
 
 [dev-dependencies]
 tempfile = "3"

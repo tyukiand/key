@@ -6,4 +6,4 @@ apt-get update -qq && apt-get install -y -qq openssh-client
 rustup component add rustfmt
 
 cargo fmt --check
-cargo test --features testing
+cargo test

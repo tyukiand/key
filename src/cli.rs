@@ -11,46 +11,6 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub read_only: bool,
 
-    /// Override ~/.key directory (test use only)
-    #[cfg(feature = "testing")]
-    #[arg(long, global = true, value_name = "DIR")]
-    pub test_only_key_dir: Option<std::path::PathBuf>,
-
-    /// Use canned key pairs instead of running ssh-keygen (test use only)
-    #[cfg(feature = "testing")]
-    #[arg(long, global = true, value_name = "DIR")]
-    pub test_only_canned_keys: Option<std::path::PathBuf>,
-
-    /// Skip user picker in `key add`, use this user instead (test use only)
-    #[cfg(feature = "testing")]
-    #[arg(long, global = true, value_name = "USER", hide = true)]
-    pub test_only_user: Option<String>,
-
-    /// Skip password-storage prompt in `key add`, use this value instead (test use only)
-    #[cfg(feature = "testing")]
-    #[arg(long, global = true, value_name = "HINT", hide = true)]
-    pub test_only_password_storage: Option<String>,
-
-    /// Skip comment prompt in `key add`, use this value instead; empty = no comment (test use only)
-    #[cfg(feature = "testing")]
-    #[arg(long, global = true, value_name = "COMMENT", hide = true)]
-    pub test_only_comment: Option<String>,
-
-    /// Override HOME directory used by `key setup` (test use only)
-    #[cfg(feature = "testing")]
-    #[arg(long, global = true, value_name = "DIR", hide = true)]
-    pub test_only_home: Option<std::path::PathBuf>,
-
-    /// Override exe directory used by `key setup` (test use only)
-    #[cfg(feature = "testing")]
-    #[arg(long, global = true, value_name = "DIR", hide = true)]
-    pub test_only_exe_dir: Option<std::path::PathBuf>,
-
-    /// Override the current date string used by `key add` (test use only)
-    #[cfg(feature = "testing")]
-    #[arg(long, global = true, value_name = "DATE", hide = true)]
-    pub test_only_date: Option<String>,
-
     #[command(subcommand)]
     pub command: Command,
 }

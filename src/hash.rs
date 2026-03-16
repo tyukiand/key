@@ -1,9 +1,10 @@
+use crate::effects::Effects;
 use crate::state::State;
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 
 /// Compute a location-invariant merkle hash of all state.
-pub fn compute_merkle_hash(state: &State) -> Result<String> {
+pub fn compute_merkle_hash(state: &State, fx: &dyn Effects) -> Result<String> {
     let mut leaf_hashes: Vec<Vec<u8>> = Vec::new();
 
     // 1. Users (sorted alphabetically)
@@ -19,13 +20,13 @@ pub fn compute_merkle_hash(state: &State) -> Result<String> {
         leaf_hashes.push(sha256_bytes(key.dir_name.as_bytes()));
 
         // Hash info.json content
-        let info_content = std::fs::read(key.path.join("info.json"))?;
+        let info_content = fx.read_file(&key.path.join("info.json"))?;
         leaf_hashes.push(sha256_bytes(&info_content));
 
         // Hash key.pub content
         let pub_path = key.path.join("key.pub");
-        if pub_path.exists() {
-            let pub_content = std::fs::read(&pub_path)?;
+        if fx.path_exists(&pub_path) {
+            let pub_content = fx.read_file(&pub_path)?;
             leaf_hashes.push(sha256_bytes(&pub_content));
         }
     }
