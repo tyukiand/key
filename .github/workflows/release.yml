@@ -81,18 +81,12 @@ jobs:
         with:
           name: key-macos-arm64
 
-      - name: Get tag annotation
-        id: tag_message
+      - name: Create release
         run: |
-          message=$(git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME")
-          echo "body<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$message" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          body: ${{ steps.tag_message.outputs.body }}
-          files: |
-            key-linux-x86_64.zip
-            key-macos-x86_64.zip
+          gh release create "$GITHUB_REF_NAME" \
+            --notes-from-tag \
+            key-linux-x86_64.zip \
+            key-macos-x86_64.zip \
             key-macos-arm64.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
