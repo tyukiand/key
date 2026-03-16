@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cargo fmt --check
-cargo test --features testing
+# Run exactly what CI runs
+bash ci.sh

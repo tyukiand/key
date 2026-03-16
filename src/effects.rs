@@ -268,6 +268,7 @@ impl Effects for RealEffects {
 
 // --- CannedEffects ---
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub struct CannedEffects {
     fs: RefCell<BTreeMap<PathBuf, Vec<u8>>>,
     dirs: RefCell<BTreeSet<PathBuf>>,
@@ -283,6 +284,7 @@ pub struct CannedEffects {
 }
 
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 impl CannedEffects {
     pub fn new() -> Self {
         CannedEffects {
