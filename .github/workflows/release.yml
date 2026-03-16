@@ -83,8 +83,10 @@ jobs:
 
       - name: Create release
         run: |
+          git fetch origin tag "$GITHUB_REF_NAME" --no-tags --force
+          NOTES="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")"
           gh release create "$GITHUB_REF_NAME" \
-            --notes-from-tag \
+            --notes "$NOTES" \
             key-linux-x86_64.zip \
             key-macos-x86_64.zip \
             key-macos-arm64.zip
