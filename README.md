@@ -22,6 +22,24 @@ cargo test --features testing
 
 Plain `cargo test` (without `--features testing`) will fail — the integration tests spawn the binary with test-only flags that only exist when the feature is enabled.
 
+## Releasing
+
+Releases are triggered by pushing a tag named `vX.Y.Z` whose version matches `Cargo.toml`. The tag's commit message becomes the GitHub release body.
+
+1. Bump the version in `Cargo.toml`.
+2. Commit the version bump.
+3. Tag the commit with the matching version:
+   ```
+   git tag -a v2.1.0 -m "Release message here"
+   ```
+4. Push the commit **and** the tag:
+   ```
+   git push origin main
+   git push origin v2.1.0
+   ```
+
+CI will validate that the tag version matches `Cargo.toml`, build binaries for Linux (x86\_64) and macOS (arm64), and publish a GitHub release with both binaries attached.
+
 ## Usage
 
 ```
