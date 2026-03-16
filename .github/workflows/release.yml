@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag matches Cargo.toml version
+        run: |
+          cargo_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "ERROR: Tag version '$tag_version' does not match Cargo.toml version '$cargo_version'"
+            exit 1
+          fi
+          echo "Version '$cargo_version' matches tag."
+
+  build:
+    needs: validate-version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            artifact: key-linux-x86_64
+          - runner: macos-latest
+            artifact: key-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Copy binary to artifact name
+        run: cp target/release/key ${{ matrix.artifact }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: key-linux-x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: key-macos-arm64
+
+      - name: Get tag commit message
+        id: tag_message
+        run: |
+          message=$(git log -1 --pretty=format:'%B' "$GITHUB_REF_NAME")
+          echo "body<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$message" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.tag_message.outputs.body }}
+          files: |
+            key-linux-x86_64
+            key-macos-arm64
