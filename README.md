@@ -24,13 +24,13 @@ Plain `cargo test` (without `--features testing`) will fail — the integration 
 
 ## Releasing
 
-Releases are triggered by pushing a tag named `vX.Y.Z` whose version matches `Cargo.toml`. The tag's commit message becomes the GitHub release body.
+Releases are triggered by pushing a tag named `vX.Y.Z` whose version matches `Cargo.toml`. The tag annotation becomes the GitHub release body.
 
 1. Bump the version in `Cargo.toml`.
 2. Commit the version bump.
-3. Tag the commit with the matching version:
+3. Tag the commit — the annotation message becomes the GitHub release body:
    ```
-   git tag -a v2.1.0 -m "Release message here"
+   git tag -a v2.1.0 -m "Release notes here"
    ```
 4. Push the commit **and** the tag:
    ```

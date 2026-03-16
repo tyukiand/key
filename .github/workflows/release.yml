@@ -65,10 +65,10 @@ jobs:
         with:
           name: key-macos-arm64
 
-      - name: Get tag commit message
+      - name: Get tag annotation
         id: tag_message
         run: |
-          message=$(git log -1 --pretty=format:'%B' "$GITHUB_REF_NAME")
+          message=$(git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME")
           echo "body<<EOF" >> "$GITHUB_OUTPUT"
           echo "$message" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
