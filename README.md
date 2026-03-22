@@ -48,15 +48,23 @@ CI will validate that the tag version matches `Cargo.toml`, build binaries for L
 ## Usage
 
 ```
+# First-time setup (run from the unzipped release directory)
+cd path/to/unzipped-key-directory/bin && ./key setup  # adds key to PATH in .bashrc / .zshrc
+
+# Managing users
+key user add <NAME>        # add a known user
+key user list              # list known users
+key user delete [NAME]     # remove a user
+
+# Managing keys
 key add [KEY_ID]           # create a new SSH key
 key list [-v]              # list keys
-key activate [KEY_ID]      # load a key into ssh-agent
-key pubkey [KEY_ID]        # print the public key to copy to GitHub/GitLab
 key amend <FIELD> <VALUE> [KEY_ID]  # update password-storage or comment
 key delete [KEY_ID]        # permanently delete a key
-key user add <NAME>        # manage known users
-key user list
-key user delete [NAME]
-key setup                  # add key's directory to PATH in shell RC
-key status                 # merkle hash of current state
+key pubkey [KEY_ID]        # print the public key to copy to GitHub/GitLab
+key activate [KEY_ID]      # load a key into ssh-agent
+
+# Diagnostics
+key status                 # run this to understand current state
+key help                   # show usage
 ```
