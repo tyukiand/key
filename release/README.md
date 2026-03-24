@@ -6,10 +6,10 @@ Porcelain wrapper over `ssh-keygen` and `ssh-add` for managing SSH keys.
 
 ### 1. Add `key` to your PATH
 
-After unpacking, run `key setup` once from the directory containing the binary:
+After unpacking, `cd` into the `bin` directory and run `key setup` once:
 
 ```
-./key setup
+cd key-vX.Y.Z-your-os/bin && ./key setup
 ```
 
 This adds the binary's directory to your shell RC file (`~/.zshrc` or `~/.bashrc`).
@@ -44,7 +44,8 @@ key amend <FIELD> <VALUE> [KEY_ID]  update password-storage hint or comment
 ### 5. Check state
 
 ```
-key status                          merkle hash of current key state
+key status                          run this to understand current state
+key help                            show usage
 ```
 
 ## Key storage
