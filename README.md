@@ -2,6 +2,36 @@
 
 Porcelain wrapper over `ssh-keygen` and `ssh-add` for managing SSH keys.
 
+## Installation
+
+Head over to the Releases (look on the right). Download the `.zip` for your os. Unpack it.
+
+```
+# First-time setup (run from the unzipped release directory)
+cd path/to/unzipped-key-directory/key-theversion-your-os/bin && ./key setup  # adds key to PATH in .bashrc / .zshrc
+```
+
+## Usage
+```
+# Managing users
+key user add <NAME>        # add a known user
+key user list              # list known users
+key user delete [NAME]     # remove a user
+
+# Managing keys
+key add [KEY_ID]           # create a new SSH key
+key list [-v]              # list keys
+key amend <FIELD> <VALUE> [KEY_ID]  # update password-storage or comment
+key delete [KEY_ID]        # permanently delete a key
+key pubkey [KEY_ID]        # print the public key to copy to GitHub/GitLab
+key activate [KEY_ID]      # load a key into ssh-agent
+
+# Diagnostics
+key status                 # run this to understand current state
+key help                   # show usage
+```
+
+
 ## Building
 
 ```
@@ -45,26 +75,4 @@ Releases are triggered by pushing a tag named `vX.Y.Z` whose version matches `Ca
 
 CI will validate that the tag version matches `Cargo.toml`, build binaries for Linux (x86\_64) and macOS (arm64), and publish a GitHub release with both binaries attached.
 
-## Usage
 
-```
-# First-time setup (run from the unzipped release directory)
-cd path/to/unzipped-key-directory/bin && ./key setup  # adds key to PATH in .bashrc / .zshrc
-
-# Managing users
-key user add <NAME>        # add a known user
-key user list              # list known users
-key user delete [NAME]     # remove a user
-
-# Managing keys
-key add [KEY_ID]           # create a new SSH key
-key list [-v]              # list keys
-key amend <FIELD> <VALUE> [KEY_ID]  # update password-storage or comment
-key delete [KEY_ID]        # permanently delete a key
-key pubkey [KEY_ID]        # print the public key to copy to GitHub/GitLab
-key activate [KEY_ID]      # load a key into ssh-agent
-
-# Diagnostics
-key status                 # run this to understand current state
-key help                   # show usage
-```
