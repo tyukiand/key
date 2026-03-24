@@ -8,7 +8,7 @@ Head over to the Releases (look on the right). Download the `.zip` for your os. 
 
 ```
 # First-time setup (run from the unzipped release directory)
-cd path/to/unzipped-key-directory/key-theversion-your-os/bin && ./key setup  # adds key to PATH in .bashrc / .zshrc
+cd path/to/key-vX.Y.Z-your-os/bin && ./key setup  # adds key to PATH in .bashrc / .zshrc
 ```
 
 ## Usage
