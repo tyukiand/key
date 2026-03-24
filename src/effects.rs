@@ -169,15 +169,11 @@ impl Effects for RealEffects {
 
     fn ssh_keygen_generate(&self, key_path: &Path, comment: &str) -> Result<()> {
         use std::process::Command;
+        let key_path_str = key_path.to_str().ok_or_else(|| {
+            anyhow::anyhow!("Key path is not valid UTF-8: {}", key_path.display())
+        })?;
         let status = Command::new("ssh-keygen")
-            .args([
-                "-t",
-                "ed25519",
-                "-f",
-                key_path.to_str().expect("key path is valid UTF-8"),
-                "-C",
-                comment,
-            ])
+            .args(["-t", "ed25519", "-f", key_path_str, "-C", comment])
             .status()
             .context("Running ssh-keygen")?;
 
@@ -191,14 +187,11 @@ impl Effects for RealEffects {
 
     fn ssh_keygen_fingerprint(&self, pub_path: &Path) -> Result<String> {
         use std::process::Command;
+        let pub_path_str = pub_path.to_str().ok_or_else(|| {
+            anyhow::anyhow!("Key path is not valid UTF-8: {}", pub_path.display())
+        })?;
         let output = Command::new("ssh-keygen")
-            .args([
-                "-l",
-                "-E",
-                "sha256",
-                "-f",
-                pub_path.to_str().expect("pub path is valid UTF-8"),
-            ])
+            .args(["-l", "-E", "sha256", "-f", pub_path_str])
             .output()
             .context("Running ssh-keygen -l")?;
 

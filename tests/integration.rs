@@ -200,6 +200,67 @@ fn key_add_duplicate_id_is_error() {
 }
 
 // ---------------------------------------------------------------------------
+// Key-ID validation tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn key_add_rejects_slash_in_id() {
+    let fx = CannedEffects::new();
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    let result = key::commands::key::add(&mut state, Some("../evil".into()), &fx, &token);
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("invalid character"),
+        "unexpected error: {}",
+        msg
+    );
+}
+
+#[test]
+fn key_add_rejects_empty_id() {
+    let fx = CannedEffects::new();
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    let result = key::commands::key::add(&mut state, Some("".into()), &fx, &token);
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("empty"), "unexpected error: {}", msg);
+}
+
+#[test]
+fn key_add_rejects_space_in_id() {
+    let fx = CannedEffects::new();
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    let result = key::commands::key::add(&mut state, Some("my key".into()), &fx, &token);
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("invalid character"),
+        "unexpected error: {}",
+        msg
+    );
+}
+
+#[test]
+fn key_add_accepts_valid_id_chars() {
+    let fx = CannedEffects::new()
+        .with_pick_answers(vec![0])
+        .with_prompt_answers(vec!["vault".into(), "".into()]);
+    let mut state = State::load(&PathBuf::from("/test/.key"), &fx).unwrap();
+    let token = MutationToken::acquire(false).unwrap();
+
+    key::commands::user::add(&mut state, "alice@test".into(), &fx, &token).unwrap();
+    let result = key::commands::key::add(&mut state, Some("my-key_1+2".into()), &fx, &token);
+    assert!(result.is_ok(), "expected ok, got: {:?}", result);
+}
+
+// ---------------------------------------------------------------------------
 // Status tests
 // ---------------------------------------------------------------------------
 

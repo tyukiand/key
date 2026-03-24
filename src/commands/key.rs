@@ -53,6 +53,24 @@ pub fn list(state: &State, verbose: bool, fx: &dyn Effects) -> Result<()> {
     Ok(())
 }
 
+fn validate_key_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        bail!("Key ID must not be empty");
+    }
+    if let Some(c) = id
+        .chars()
+        .find(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '+' | '-'))
+    {
+        bail!(
+            "Key ID '{}' contains invalid character '{}'. \
+             Only letters, digits, '_', '+', and '-' are allowed.",
+            id,
+            c
+        );
+    }
+    Ok(())
+}
+
 pub fn add(
     state: &mut State,
     key_id: Option<String>,
@@ -64,6 +82,8 @@ pub fn add(
         Some(id) => id,
         None => fx.prompt_text("Enter key ID (without date)")?,
     };
+
+    validate_key_id(&key_id)?;
 
     // Validate no existing key has same id prefix
     for existing in &state.keys {
