@@ -4,7 +4,15 @@ Porcelain wrapper over `ssh-keygen` and `ssh-add` for managing SSH keys.
 
 ## Installation
 
-Head over to the Releases (look on the right). Download the `.zip` for your os. Unpack it.
+Head over to the Releases (look on the right). Download the `.zip` for your platform and unpack it.
+
+| File | Who it's for |
+|------|-------------|
+| `key-vX.Y.Z-linux-x86_64.zip` | Linux on a 64-bit Intel or AMD processor |
+| `key-vX.Y.Z-macos-intel.zip` | macOS on an Intel Mac |
+| `key-vX.Y.Z-macos-apple-silicon.zip` | macOS on an Apple Silicon Mac (M1, M2, M3, M4, …) |
+
+Not sure which Mac you have? Apple menu → About This Mac. If "Chip" says "Apple M…" pick Apple Silicon; if it says "Intel" pick Intel.
 
 ```
 # First-time setup (run from the unzipped release directory)
@@ -73,6 +81,6 @@ Releases are triggered by pushing a tag named `vX.Y.Z` whose version matches `Ca
    git push origin vX.Y.Z
    ```
 
-CI will validate that the tag version matches `Cargo.toml`, build binaries for Linux (x86\_64) and macOS (arm64), and publish a GitHub release with both binaries attached.
+CI will validate that the tag version matches `Cargo.toml`, build binaries for Linux (x86\_64), macOS Intel, and macOS Apple Silicon, and publish a GitHub release with all three attached.
 
 

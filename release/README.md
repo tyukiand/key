@@ -2,6 +2,16 @@
 
 Porcelain wrapper over `ssh-keygen` and `ssh-add` for managing SSH keys.
 
+## Which download?
+
+| File | Who it's for |
+|------|-------------|
+| `key-vX.Y.Z-linux-x86_64.zip` | Linux on a 64-bit Intel or AMD processor |
+| `key-vX.Y.Z-macos-intel.zip` | macOS on an Intel Mac |
+| `key-vX.Y.Z-macos-apple-silicon.zip` | macOS on an Apple Silicon Mac (M1, M2, M3, M4, …) |
+
+Not sure which Mac you have? Apple menu → About This Mac. If "Chip" says "Apple M…" pick Apple Silicon; if it says "Intel" pick Intel.
+
 ## Getting started
 
 ### 1. Add `key` to your PATH
