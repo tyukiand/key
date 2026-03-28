@@ -1,0 +1,345 @@
+We want to add new command `key rules check user-defined.yaml` that can be pointed at a YAML file
+and then enforce that bunch of tokens are placed throughout the system in all the right places. Unlike the main
+functionality that _must_ rely on `ssh-keygen` / `ssh-add`, the checks specified below should _not_ require any third party tools, everything should be included in the `key`-executable already.
+
+The user-defined.yaml is supposed to be an easily configurable description, defining:
+
+  - what files to look into (often lists of or-ed files)
+  - what variables / keys / xml / json / yaml entries to look for in those files
+  - remediation instructions how to set them up in case they are not set up yet
+  
+The "AST" of the basic constructs is as follows (we want them to be modeled as Rust-enums):
+
+  - FilePredicateAst:
+     - And(x: List of FPA) // 
+     - Or(xs: List of FPA, decisionGuidance: String) // the decision guidance is to suggest to the user which of the options they should try first (only one of the or-ed options must succeed)
+     - FileExists // checks merely that a file exists
+     - TextHasLines(min: option Int, max: option Int) // both inclusive
+     - TextMatches(regex) // checks whether there is at least one line matching the regex; in the syntax most convenient for rust, I'm sure they have something reasonable
+     - ShellExportsVariable(varname) // Checks for existence of `export VARNAME=.*` line (maybe desugars to the regex-case, and re-runs the interpreter on the desugared ast)
+     - ShellDefinesVariable(varname) // Checks for existence of `export VARNAME=.*` or `VARNAME=.*`, 
+     - ShellAddsToPath(varname) // Checks strictly for `export PATH="$VARNAME:$PATH"`, desugars and delegates to HasLineMatching (intended to be used together with `varname`)
+     - PropertiesDefinesKey(keyName: String) // Checks exactly for "$keyName=.*" line in a .properties file with simple `k=v` entries
+     - XmlMatches(xpath) // not sure, AI, come up with some good reasonable convention how to check that something like
+
+<settings>
+  <servers>
+    <server>
+      <id>blah</id>
+      <token>tok123434</token>
+    </server>
+  </servers>
+</settings
+
+    indeed contains settings -> servers -> server -> token; Try to keep it lightweight, definitely ensure it's not turing-complete madness like XPath. In case of doubt, take something simpler, in the spirit of jq / xq
+
+    - JsonMatches(jquesqueQuery) - again, AI, come up with a good convention how to make the queries here, try to keep it in the spirit of jq, where possible.
+
+    - YamlMatches(query) - same, but for yaml
+
+  (/ end of FilePredicateAst)
+
+The semantics of file predicates is a function that takes the absolute file path and evaluates to either just true / success, or to failure with a detailed actionable error message explaining why the predicate was not satisfied for this file.
+In order to convert the FilePredicates into actual decisions, we now need to feed some actual files into them.
+
+The basic assumption is that all the file paths are always relative to a special distinguished directory that we call `$HOME`. During the "normal" execution of the checks, the `$HOME` is supposed to correspond to user's normal `$HOME`. During the tests (to be specified later), the `$HOME` that serves as a base of the filepaths will be overridden by a directories containing the test-files. The `~` below and in the `.yaml` is supposed to be used interchangeably with `$HOME`. The paths are supposed to be assumed "simple", no `/./`, no `/../`, no symlinks and so on. In the following, we will call entities like `~/.bashrc` or `$HOME/.gradle/settings.xml` "simple paths" (which may or may not be represented by the paths natively understood by Rust - [ai-elaborate here])
+
+The most straightforward way to supply a file to a file predicate is to just give the path of a file; Additionally, we want to state that _all_ files satisfy some predicate, or that _some_ files satisfy a predicate, etc:
+
+  - Proposition:
+    - FileHasProperty(simplePath, filePredicate) // asserts that the file satisfies the file predicate
+    - Exists(simplePaths, filePredicate) // at least one of the files satisfies the file predicate
+    - Forall(simplePaths, filePredicate) // all files satisfy the file predicate
+    - And(propositions) // conjunction of propositions (not to be confused with poinwise and-ing of file predicates)
+    - Or(propositions) // disjunction 
+
+# Syntax
+
+We will not need a separate text-level "concrete syntax", instead we will use YAML as our "concrete syntax"; Then we will validate and interpret a subset of valid YAML-trees into our ASTs. The failure of a YAML tree to be in the subset of trees corresponding to our ASTs should be reported with a detailed actionable error message.
+
+The acceptable YAML structure should be explained in `key guide`, the `yaml`-trees rendered therein should be generated from actual ASTs to avoid stale documentation in `key guide`.
+
+## ADT rename
+
+Predicate variants are named with a file-type prefix that signals which format they apply to:
+
+| Old name              | New name                  | YAML key                  |
+|-----------------------|---------------------------|---------------------------|
+| Exists                | FileExists                | `file-exists`             |
+| HasLines              | TextHasLines              | `text-has-lines`          |
+| HasLineMatching       | TextMatches               | `text-matches`            |
+| ExportsShellVariable  | ShellExports              | `shell-exports`           |
+| AddsToPath            | ShellAddsToPath           | `shell-adds-to-path`      |
+| PropertiesDefinesKey  | PropertiesDefinesKey      | `properties-defines-key`  |
+| XmlMatches            | XmlMatchesPath            | `xml-matches`             |
+| JsonMatches           | JsonMatchesQuery          | `json-matches`            |
+| YamlMatches           | YamlMatchesQuery          | `yaml-matches`            |
+| And                   | And                       | `all`                     |
+| Or                    | Or                        | `any`                     |
+
+## Rust types
+
+```rust
+// serde attributes ensure single-key dispatch matching the YAML syntax below
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum FilePredicateAst {
+    FileExists,
+    TextMatchesRegex(String),
+    TextHasLines { min: Option<u32>, max: Option<u32> },
+    ShellExports(String),
+    ShellAddsToPath(String),
+    PropertiesDefinesKey(String),
+    XmlMatchesPath(String),
+    JsonMatchesQuery(String),
+    YamlMatchesQuery(String),
+    All(Vec<FilePredicateAst>),
+    Any { hint: String, checks: Vec<FilePredicateAst> },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Proposition {
+    FileSatisfies { path: SimplePath, check: FilePredicateAst },
+    Forall { files: Vec<SimplePath>, check: FilePredicateAst },
+    Exists { files: Vec<SimplePath>, check: FilePredicateAst },
+    All(Vec<Proposition>),
+    Any(Vec<Proposition>),
+}
+```
+
+## Design principles
+
+- Context determines level: predicates only appear inside `check:`, propositions appear at top level or
+  in `all:`/`any:` lists — so reusing `all`/`any` at both levels is unambiguous and less to learn.
+- Single-key dispatch: each AST node maps to exactly one YAML key, so the parser knows which enum
+  variant it's reading.
+- No-arg predicates are bare strings; single-arg predicates are `key: value`; multi-arg predicates
+  are `key: { ... }`.
+- `forall`/`exists` are reserved for the Proposition quantifiers (they bind a file list + predicate).
+  `all`/`any` are used for logical conjunction/disjunction at both levels.
+- `all`/`any` appear as both Proposition-level connectives (list of sub-propositions) and
+  FilePredicate-level connectives (list of predicates inside `check:`). They are disambiguated purely
+  by position — predicates only ever appear under `check:`.
+- `any` at Proposition level takes a flat list of sub-propositions; `any` at FilePredicate level takes
+  `{ hint, checks }`. They share the keyword but have different shapes — unambiguous since predicates
+  are only ever under `check:`.
+- Query/path conventions:
+  - `xml-matches:` — `/`-separated element-name path (no attributes, no wildcards for now)
+  - `json-matches:` — jq-style leading-dot: `.key`, `.key.subkey`, `.arr[0]`
+  - `yaml-matches:` — same as json
+
+## YAML syntax
+
+```yaml
+# ── Propositions ────────────────────────────────────────────────────────────
+
+# Proposition.All — all of these must hold
+all:
+  - forall:
+      files: [~/.bashrc, ~/.zshrc]
+      check:
+        shell-defines: JAVA_HOME_BIN
+        shell-adds-to-path: JAVA_HOME_BIN
+  - file:
+      path: ~/.claude/settings.local.json
+      check: file-exists
+
+# Proposition.Any — any of these must hold
+any:
+  - file:
+      path: ~/.ssh/config
+      check: file-exists
+  - file:
+      path: ~/.ssh/id_ed25519.pub
+      check: file-exists
+
+# Proposition.Forall — every listed file satisfies check
+forall:
+  files: [~/.bashrc, ~/.zshrc]
+  check:
+    shell-exports: JAVA_HOME
+
+# Proposition.Exists — at least one listed file satisfies check
+exists:
+  files: [~/.bash_profile, ~/.profile, ~/.zshrc]
+  check:
+    shell-exports: JAVA_HOME
+
+# Proposition.File — single file
+file:
+  path: ~/.gradle/gradle.properties
+  check:
+    properties-defines-key: signing.keyId
+
+# ── FilePredicateAst forms (used inside `check:`) ───────────────────────────
+
+# FileExists — file exists at all (no-arg, bare string)
+check: file-exists
+
+# TextMatchesRegex
+check:
+  text-matches: "^export JAVA_HOME=.*"
+
+# TextHasLines — both bounds optional
+check:
+  text-has-lines:
+    min: 1
+    max: 500
+
+# ShellExports (desugars to TextMatchesRegex)
+check:
+  shell-exports: JAVA_HOME
+
+# ShellAddsToPath (desugars to TextMatchesRegex)
+check:
+  shell-adds-to-path: JAVA_HOME_BIN
+
+# PropertiesDefinesKey
+check:
+  properties-defines-key: my.setting
+
+# XmlMatchesPath — slash-separated element-name path
+check:
+  xml-matches: settings/servers/server/token
+
+# JsonMatchesQuery — jq-style dot-path
+check:
+  json-matches: .user.name
+
+# YamlMatchesQuery — dot-path with optional array index
+check:
+  yaml-matches: models[0].name
+
+# All — all predicates must hold
+check:
+  all:
+    - file-exists
+    - shell-exports: JAVA_HOME
+
+# Any — hint shown in error message when all branches fail
+check:
+  any:
+    hint: "Configure Java home"
+    checks:
+      - shell-exports: JAVA_HOME
+      - shell-adds-to-path: JAVA_HOME_BIN
+```
+
+## `key rules add <file.yaml>` — interactive rule builder
+
+Launches a structured terminal dialog (numbered menus for every variant choice, free-text prompts
+only for string values). The dialog walks the user through constructing a `Proposition` value:
+
+1. "What kind of proposition?" → numbered list of variants: `file` / `forall` / `exists` / `all` / `any`
+2. Depending on choice, prompts for sub-fields (file paths, check type, sub-propositions, …)
+3. The check type selection shows a numbered list of all `FilePredicateAst` variants
+4. `all` and `any` at the Proposition level keep prompting "add another?" until the user stops
+5. Once complete, the dialog yields a fully-constructed, type-safe `Proposition`
+
+ANDing with existing rules (without unnecessary nesting):
+- If `<file.yaml>` does not exist: write the new proposition directly
+- If `<file.yaml>` exists with a top-level `all:` list: append the new proposition to that list (flat)
+- If `<file.yaml>` exists with any other top-level form: replace it with `all: [existing, new]`
+
+This ensures the file never accumulates `all: [all: [...], x]` nesting.
+
+Define a trait:
+
+```rust
+trait Interactive: Sized {
+    fn prompt_interactive() -> Self;
+}
+```
+
+Implement it manually for `FilePredicateAst` and `Proposition`. Each impl presents variant names as a
+numbered menu (using e.g. `dialoguer::Select`), then prompts for each field. Since
+`prompt_interactive()` returns `Self`, the type system guarantees the result is a valid enum value —
+no invalid states possible.
+
+Why not a derive macro? A proc-macro could auto-generate `Interactive` from the enum, but adds
+complexity. Manual impls are ~50 lines per enum and are easier to customize (field descriptions,
+validation on string inputs).
+
+`key guide` docs generation: Since the types are `Serialize`, example rules in `key guide` output are
+generated by constructing AST values in Rust tests and serializing them — never written by hand. This
+is the guarantee of non-stale docs.
+   // Afterthought: `Serialize` might be of not much use here, since we would need to convert them to the YAML
+   //               files according to the syntax we defined. It is to be investigated whether serialiazation
+   //               can work directly in yaml. In any case, in the tests, the generated yaml should be parsed 
+   //               back and compared with the actual AST, to avoid that we include outdated invalid junk in the
+   //               guide.
+
+## Testing strategy
+
+The `evaluate` function signature takes `home_dir: &Path` explicitly (never reads `$HOME` env
+directly):
+
+```rust
+fn evaluate(proposition: &Proposition, home_dir: &Path) -> Result<(), Vec<RuleFailure>>;
+```
+
+In production, callers pass the real home dir. In tests, pass a path to a static fixture directory.
+
+Static fixture directories checked into the repo under `tests/fixtures/rules/`. Each scenario is a
+subdirectory containing:
+- A fake `$HOME` tree (`.bashrc`, `.zshrc`, `.gradle/gradle.properties`, etc.)
+- A `rules.yaml` (the proposition to evaluate)
+- An `expected.txt` or inline assertion (pass, or expected failure message)
+
+Since fixture files are never modified by tests (evaluate is read-only), no temp-dir copying is
+needed. The test simply calls:
+
+```rust
+evaluate(&proposition, Path::new("tests/fixtures/rules/scenario-name/home"))
+```
+
+Test scenarios to cover:
+- Pass cases: file exists, shell variable exported, path extended, properties key present,
+  all/forall/exists satisfied
+- Fail cases: file missing, wrong variable name, line not present, some-but-not-all files fail forall
+- Combinator cases: `all` fails if any child fails; `any` passes if one child passes; nested
+  combinations
+- Edge cases: empty files, files with Unicode, non-existent directories in `forall` list
+- YAML parsing errors: invalid YAML, valid YAML that doesn't match the schema (should produce
+  actionable error, not panic)
+
+The existing `TestEnv` / binary-invocation pattern (from `tests/common/mod.rs`) is extended with a
+`--test-only-home-dir <path>` flag (analogous to `--test-only-key-dir`) so end-to-end
+`key rules check` invocations in integration tests can also use fixture directories.
+
+Unit-level tests (testing `evaluate` directly without going through the binary) live in `src/rules/`
+and use the fixture paths directly — no `CannedEffects` needed since rules evaluation is pure file
+I/O, not SSH operations.
+
+Testing yaml -> AST parsing is doen in conjuction with AST -> YAML generation:
+
+  parseValid is the test-only parsing helper that asserts that the input was actually valid, then
+  forall ast: parseValid(generateYaml(ast)) == ast                             (yaml faithfully encodes ast)
+  forall yaml: generateYaml(parseValid(generateYaml(parseValid(yaml))))        (pretty-printing idempotence)
+
+This could be tested either only on the text-encoding-yaml (i.e. "parseValid" would include yaml-level CST parsing, as well as higher-level AST parsing), or both on the text and YAML-structure-in-memory level.
+
+Regarding the guide:
+
+  - there should be a separate scenario-AST, with multiple different semantic interpretations:
+  - Scenarios should include actions like "write text T to file F"
+  - Unit-Test semantics: ScenarioAst -> actual actions writing temporary files during tests and making actual test-assertions; The actions are done through the internal Rust-level operations (like normal unit tests)
+  - Integration-Test semantics: ScenarioAst -> actual actions writing temporary files and running the tool, but this time, the entire compiled tool is executed for real, as one whole executable (this implies that the ScenariosAst will have to include its own little EDSL for describing "command-line-interface"-like commands, which will be translated into code actions in the unit tests, and into actual command-line arguments in the integration tests)
+  - Guide-Semantics: ScenarioAst -> String generates the actual guide (which could decide to render "write text T to file F" as "Assume that F contains T" in the human-readable guide-text); The command-line-args sublanguage would again be
+ rendered as the textual representation of the usual command line args, as the user would type them into the CLI.
+
+In this way, we can "run the scenario for real" (in two ways: on unit-test-code level and integration-test-executable level), and see whether it actually makes sense, before rendering it as a string into the guide. In this way, the guide will be forced to be up-to-date (because it's essentially unit-tested).
+
+-----
+
+Rules-Yaml Testing
+
+We not only have to test our code, we also need to give the user possibility to test their .yaml files.
+
+```
+key rules test user-rules.yaml fake-home-directory [--expect-failure-message <msg1>]* [--expect-failures [<num-failures>]]
+```
+should check whether `fake-home-directory` adheres to the rules in config.yaml, and if not, whether the error messages (hints) contain all the expected failure messages / specified number of error messages / exactly the specified number of failures.
+
+
