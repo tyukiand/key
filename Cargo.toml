@@ -1,6 +1,6 @@
 [package]
 name = "key"
-version = "2.1.8"
+version = "2.2.0"
 edition = "2021"
 
 [lib]
@@ -19,6 +19,9 @@ chrono = { version = "0.4", features = ["clock"] }
 sha2 = "0.10"
 dialoguer = "0.11"
 anyhow = "1"
+serde_yaml = "0.9"
+regex = "1"
+quick-xml = "0.36"
 
 [features]
 testing = []

@@ -3,6 +3,7 @@ mod commands;
 mod effects;
 mod hash;
 mod mutation;
+mod rules;
 mod state;
 
 use anyhow::Result;
@@ -23,6 +24,15 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let fx = RealEffects;
+
+    // Rules commands don't need SSH or key state
+    if let Command::Rules(ref rules_cmd) = cli.command {
+        let home = match cli.test_only_home_dir {
+            Some(ref h) => PathBuf::from(h),
+            None => PathBuf::from(fx.home_dir()?),
+        };
+        return commands::rules::dispatch(rules_cmd, &home, &fx);
+    }
 
     // Check prerequisites
     fx.check_ssh_prereqs()?;
@@ -86,6 +96,8 @@ fn run() -> Result<()> {
         Command::Setup => {
             commands::setup::setup(&fx)?;
         }
+
+        Command::Rules(_) => unreachable!("handled above"),
     }
 
     Ok(())

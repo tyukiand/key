@@ -11,6 +11,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub read_only: bool,
 
+    /// Override home directory for rules commands (testing only)
+    #[arg(long, hide = true)]
+    pub test_only_home_dir: Option<String>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -92,6 +96,49 @@ pub enum Command {
     /// Add this executable's directory to PATH in the shell RC file
     #[command(name = "setup")]
     Setup,
+
+    /// Evaluate, build, or test user-defined rule files
+    #[command(subcommand)]
+    Rules(RulesCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RulesCommand {
+    /// Check rules against the current system
+    #[command(name = "check")]
+    Check {
+        /// Path to the YAML rules file
+        yaml_path: String,
+    },
+
+    /// Interactively add a new rule to a YAML file
+    #[command(name = "add")]
+    Add {
+        /// Path to the YAML rules file (created if it doesn't exist)
+        yaml_path: String,
+    },
+
+    /// Print a guide explaining the rules YAML syntax with examples
+    #[command(name = "guide")]
+    Guide,
+
+    /// Test rules against a fixture directory
+    #[command(name = "test")]
+    Test {
+        /// Path to the YAML rules file
+        yaml_path: String,
+
+        /// Path to a fake home directory containing test fixtures
+        fake_home: String,
+
+        /// Expected failure messages (assert stderr contains each)
+        #[arg(long = "expect-failure-message")]
+        expect_failure_messages: Vec<String>,
+
+        /// Expected number of failures
+        #[arg(long = "expect-failures")]
+        expect_num_failures: Option<usize>,
+    },
 }
 
 /// Mutable fields that can be changed with `key amend`.
