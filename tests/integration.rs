@@ -423,6 +423,105 @@ fn setup_preserves_existing_rc_content() {
 }
 
 // ---------------------------------------------------------------------------
+// Setup path sanitization tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn setup_rejects_backtick_in_exe_path() {
+    let fx = CannedEffects::new()
+        .with_home("/fake/home")
+        .with_shell("/bin/zsh")
+        .with_exe_dir("/bad`path/bin");
+
+    let result = key::commands::setup::setup(&fx);
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("unsafe character"),
+        "unexpected error: {}",
+        msg
+    );
+}
+
+#[test]
+fn setup_rejects_space_in_exe_path() {
+    let fx = CannedEffects::new()
+        .with_home("/fake/home")
+        .with_shell("/bin/zsh")
+        .with_exe_dir("/bad path/bin");
+
+    let result = key::commands::setup::setup(&fx);
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("unsafe character"),
+        "unexpected error: {}",
+        msg
+    );
+}
+
+#[test]
+fn setup_rejects_quote_in_exe_path() {
+    let fx = CannedEffects::new()
+        .with_home("/fake/home")
+        .with_shell("/bin/zsh")
+        .with_exe_dir("/bad'path/bin");
+
+    let result = key::commands::setup::setup(&fx);
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("unsafe character"),
+        "unexpected error: {}",
+        msg
+    );
+}
+
+#[test]
+fn setup_rejects_dollar_in_exe_path() {
+    let fx = CannedEffects::new()
+        .with_home("/fake/home")
+        .with_shell("/bin/zsh")
+        .with_exe_dir("/bad$path/bin");
+
+    let result = key::commands::setup::setup(&fx);
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("unsafe character"),
+        "unexpected error: {}",
+        msg
+    );
+}
+
+#[test]
+fn setup_rejects_semicolon_in_exe_path() {
+    let fx = CannedEffects::new()
+        .with_home("/fake/home")
+        .with_shell("/bin/zsh")
+        .with_exe_dir("/bad;path/bin");
+
+    let result = key::commands::setup::setup(&fx);
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("unsafe character"),
+        "unexpected error: {}",
+        msg
+    );
+}
+
+#[test]
+fn setup_accepts_clean_exe_path() {
+    let fx = CannedEffects::new()
+        .with_home("/fake/home")
+        .with_shell("/bin/zsh")
+        .with_exe_dir("/usr/local/bin");
+
+    key::commands::setup::setup(&fx).unwrap();
+}
+
+// ---------------------------------------------------------------------------
 // Permissions tests (using real filesystem with RealEffects)
 // ---------------------------------------------------------------------------
 

@@ -9,6 +9,7 @@ const END_LINE: &str = "# [ADDED by key] END   # __added_by_key";
 
 pub fn setup(fx: &dyn Effects) -> Result<()> {
     let exe_dir = fx.current_exe_dir()?;
+    sanitize_path(&exe_dir)?;
     let rc_path = detect_shell_rc(fx)?;
 
     update_rc_file(&rc_path, &exe_dir, fx)?;
@@ -23,6 +24,52 @@ pub fn setup(fx: &dyn Effects) -> Result<()> {
         rc_path.display()
     ));
 
+    Ok(())
+}
+
+/// Reject paths that contain characters which could be dangerous when
+/// interpolated into a shell config file (backticks, quotes, spaces,
+/// dollar signs, semicolons, etc.).
+fn sanitize_path(path: &Path) -> Result<()> {
+    let s = path.to_string_lossy();
+    if s.is_empty() {
+        bail!("executable path is empty");
+    }
+    for ch in s.chars() {
+        let bad = matches!(
+            ch,
+            '`' | '\''
+                | '"'
+                | ' '
+                | '\t'
+                | '$'
+                | ';'
+                | '&'
+                | '|'
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+                | '!'
+                | '~'
+                | '#'
+                | '\\'
+                | '\n'
+                | '\r'
+                | '\0'
+        );
+        if bad {
+            bail!(
+                "executable path contains unsafe character {:?}: {}\n\
+                 Move the binary to a path without backticks, quotes, spaces, \
+                 or other shell-special characters.",
+                ch,
+                s
+            );
+        }
+    }
     Ok(())
 }
 

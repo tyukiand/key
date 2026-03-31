@@ -244,7 +244,12 @@ impl Effects for RealEffects {
     }
 
     fn home_dir(&self) -> Result<String> {
-        Ok(std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
+        std::env::var("HOME").map_err(|_| {
+            anyhow::anyhow!(
+                "$HOME is not set. Set the HOME environment variable to your home directory \
+                 (e.g. export HOME=/home/youruser) and try again."
+            )
+        })
     }
 
     fn shell_env(&self) -> Result<String> {
