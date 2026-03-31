@@ -24,8 +24,8 @@ pub fn desugar(pred: &FilePredicateAst) -> Option<FilePredicateAst> {
         FilePredicateAst::TextHasLines { .. } => None,
         FilePredicateAst::PropertiesDefinesKey(_) => None,
         FilePredicateAst::XmlMatchesPath(_) => None,
-        FilePredicateAst::JsonMatchesQuery(_) => None,
-        FilePredicateAst::YamlMatchesQuery(_) => None,
+        FilePredicateAst::JsonMatches(_) => None,
+        FilePredicateAst::YamlMatches(_) => None,
         FilePredicateAst::All(_) => None,
         FilePredicateAst::Any { .. } => None,
     }
@@ -114,37 +114,15 @@ pub fn evaluate_predicate(pred: &FilePredicateAst, file_path: &Path) -> Result<(
                 Err(e) => Err(format!("XML parse error in {}: {}", file_path.display(), e)),
             }
         }
-        FilePredicateAst::JsonMatchesQuery(query) => {
+        FilePredicateAst::JsonMatches(schema) => {
             let content = read_file_text(file_path)?;
-            match queries::json_has_query(&content, query) {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(format!(
-                    "JSON query {:?} not found in {}",
-                    query,
-                    file_path.display()
-                )),
-                Err(e) => Err(format!(
-                    "JSON parse error in {}: {}",
-                    file_path.display(),
-                    e
-                )),
-            }
+            queries::evaluate_data_schema_json_str(schema, &content)
+                .map_err(|e| format!("JSON schema mismatch in {}: {}", file_path.display(), e))
         }
-        FilePredicateAst::YamlMatchesQuery(query) => {
+        FilePredicateAst::YamlMatches(schema) => {
             let content = read_file_text(file_path)?;
-            match queries::yaml_has_query(&content, query) {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(format!(
-                    "YAML query {:?} not found in {}",
-                    query,
-                    file_path.display()
-                )),
-                Err(e) => Err(format!(
-                    "YAML parse error in {}: {}",
-                    file_path.display(),
-                    e
-                )),
-            }
+            queries::evaluate_data_schema_yaml_str(schema, &content)
+                .map_err(|e| format!("YAML schema mismatch in {}: {}", file_path.display(), e))
         }
         FilePredicateAst::All(preds) => {
             for p in preds {

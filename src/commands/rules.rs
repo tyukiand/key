@@ -11,6 +11,7 @@ pub fn dispatch(cmd: &RulesCommand, home_dir: &Path, fx: &dyn Effects) -> Result
     match cmd {
         RulesCommand::Check { yaml_path } => check(yaml_path, home_dir, fx),
         RulesCommand::Add { yaml_path } => add(yaml_path, home_dir, fx),
+        RulesCommand::New { yaml_path } => new_rules(yaml_path, fx),
         RulesCommand::Guide => guide(fx),
         RulesCommand::Test {
             yaml_path,
@@ -30,8 +31,31 @@ pub fn dispatch(cmd: &RulesCommand, home_dir: &Path, fx: &dyn Effects) -> Result
 fn load_proposition(yaml_path: &str) -> Result<crate::rules::ast::Proposition> {
     let content = std::fs::read_to_string(yaml_path)
         .with_context(|| format!("Cannot read rules file: {}", yaml_path))?;
+    if content.trim().is_empty() {
+        bail!(
+            "Rules file is empty: {}\n\
+             Use `key rules new {}` to create a valid empty rules file, \
+             then add rules with `key rules add {}`.",
+            yaml_path,
+            yaml_path,
+            yaml_path
+        );
+    }
     parse_proposition_from_str(&content)
         .with_context(|| format!("Invalid rules file: {}", yaml_path))
+}
+
+fn new_rules(yaml_path: &str, fx: &dyn Effects) -> Result<()> {
+    if std::path::Path::new(yaml_path).exists() {
+        bail!("File already exists: {}", yaml_path);
+    }
+    let empty = crate::rules::generate::generate_proposition_string(
+        &crate::rules::ast::Proposition::All(vec![]),
+    );
+    std::fs::write(yaml_path, &empty)
+        .with_context(|| format!("Cannot write rules file: {}", yaml_path))?;
+    fx.println(&format!("Created empty rules file: {}", yaml_path));
+    Ok(())
 }
 
 fn check(yaml_path: &str, home_dir: &Path, fx: &dyn Effects) -> Result<()> {

@@ -88,7 +88,9 @@ pub fn render_guide() -> String {
 }
 
 fn quick_reference() -> String {
-    use crate::rules::ast::{FilePredicateAst as F, Proposition as P, SimplePath};
+    use crate::rules::ast::{
+        DataArrayCheck, DataSchema, FilePredicateAst as F, Proposition as P, SimplePath,
+    };
     use crate::rules::generate::{generate_predicate_string, generate_proposition_string};
 
     fn strip_doc_marker(s: &str) -> String {
@@ -141,12 +143,22 @@ fn quick_reference() -> String {
             F::XmlMatchesPath("settings/servers/server/id".into()),
         ),
         (
-            "JSON query (jq-style dot-path)",
-            F::JsonMatchesQuery(".user.name".into()),
+            "JSON data schema (object with typed keys)",
+            F::JsonMatches(DataSchema::IsObject(vec![(
+                "user".into(),
+                DataSchema::IsObject(vec![("name".into(), DataSchema::IsString)]),
+            )])),
         ),
         (
-            "YAML query (same dot-path syntax)",
-            F::YamlMatchesQuery("models[0].name".into()),
+            "YAML data schema (array with forall constraint)",
+            F::YamlMatches(DataSchema::IsArray(DataArrayCheck {
+                forall: Some(Box::new(DataSchema::IsObject(vec![(
+                    "name".into(),
+                    DataSchema::IsString,
+                )]))),
+                exists: None,
+                at: vec![],
+            })),
         ),
         (
             "All predicates must hold",

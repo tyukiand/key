@@ -1,4 +1,4 @@
-use crate::rules::ast::{FilePredicateAst, Proposition, SimplePath};
+use crate::rules::ast::{DataArrayCheck, DataSchema, FilePredicateAst, Proposition, SimplePath};
 
 pub struct Scenario {
     pub name: String,
@@ -59,8 +59,9 @@ pub fn all_scenarios() -> Vec<Scenario> {
         scenario_shell_adds_to_path(),
         scenario_properties_defines_key(),
         scenario_xml_matches_path(),
-        scenario_json_matches_query(),
-        scenario_yaml_matches_query(),
+        scenario_json_matches_schema(),
+        scenario_yaml_matches_schema(),
+        scenario_json_array_schema(),
         scenario_predicate_all_and_any(),
         scenario_forall_with_fix(),
         scenario_exists_quantifier(),
@@ -367,19 +368,23 @@ fn scenario_xml_matches_path() -> Scenario {
     }
 }
 
-fn scenario_json_matches_query() -> Scenario {
+fn scenario_json_matches_schema() -> Scenario {
     let yaml = gen(&Proposition::FileSatisfies {
         path: SimplePath::new("~/.config/app.json").unwrap(),
-        check: FilePredicateAst::JsonMatchesQuery(".settings.theme".into()),
+        check: FilePredicateAst::JsonMatches(DataSchema::IsObject(vec![(
+            "settings".into(),
+            DataSchema::IsObject(vec![("theme".into(), DataSchema::IsString)]),
+        )])),
     });
 
     Scenario {
         name: "json-matches".into(),
-        description: "Check that a JSON file contains a path".into(),
+        description: "Check that a JSON file matches a data schema".into(),
         steps: vec![
             ScenarioStep::Prose(
-                "`json-matches` uses jq-style dot-paths: `.key`, `.key.sub`, \
-                 `.arr[0]`, `.arr[0].name`."
+                "`json-matches` validates a JSON file against a data schema. \
+                 The schema describes the expected shape: types, object keys, \
+                 and array constraints. Unmentioned keys are allowed."
                     .into(),
             ),
             ScenarioStep::CreateDir {
@@ -393,7 +398,7 @@ fn scenario_json_matches_query() -> Scenario {
                 yaml_content: yaml.clone(),
             },
             ScenarioStep::ExpectFailure {
-                messages: vec!["not found".into()],
+                messages: vec!["missing key".into()],
             },
             ScenarioStep::WriteFile {
                 path: SimplePath::new("~/.config/app.json").unwrap(),
@@ -405,19 +410,29 @@ fn scenario_json_matches_query() -> Scenario {
     }
 }
 
-fn scenario_yaml_matches_query() -> Scenario {
+fn scenario_yaml_matches_schema() -> Scenario {
     let yaml = gen(&Proposition::FileSatisfies {
         path: SimplePath::new("~/.config/models.yaml").unwrap(),
-        check: FilePredicateAst::YamlMatchesQuery("models[0].name".into()),
+        check: FilePredicateAst::YamlMatches(DataSchema::IsObject(vec![(
+            "models".into(),
+            DataSchema::IsArray(DataArrayCheck {
+                forall: None,
+                exists: None,
+                at: vec![(
+                    0,
+                    DataSchema::IsObject(vec![("name".into(), DataSchema::IsString)]),
+                )],
+            }),
+        )])),
     });
 
     Scenario {
         name: "yaml-matches".into(),
-        description: "Check that a YAML file contains a path".into(),
+        description: "Check that a YAML file matches a data schema".into(),
         steps: vec![
             ScenarioStep::Prose(
-                "`yaml-matches` uses the same dot-path syntax as `json-matches`, \
-                 including array indices like `models[0].name`."
+                "`yaml-matches` uses the same data schema as `json-matches`, \
+                 applied to YAML files."
                     .into(),
             ),
             ScenarioStep::CreateDir {
@@ -431,11 +446,60 @@ fn scenario_yaml_matches_query() -> Scenario {
                 yaml_content: yaml.clone(),
             },
             ScenarioStep::ExpectFailure {
-                messages: vec!["not found".into()],
+                messages: vec!["out of bounds".into()],
             },
             ScenarioStep::WriteFile {
                 path: SimplePath::new("~/.config/models.yaml").unwrap(),
                 content: "models:\n  - name: gpt4\n    version: 1\n".into(),
+            },
+            ScenarioStep::RunRulesCheck { yaml_content: yaml },
+            ScenarioStep::ExpectSuccess,
+        ],
+    }
+}
+
+fn scenario_json_array_schema() -> Scenario {
+    let yaml = gen(&Proposition::FileSatisfies {
+        path: SimplePath::new("~/.config/users.json").unwrap(),
+        check: FilePredicateAst::JsonMatches(DataSchema::IsObject(vec![(
+            "users".into(),
+            DataSchema::IsArray(DataArrayCheck {
+                forall: Some(Box::new(DataSchema::IsObject(vec![(
+                    "name".into(),
+                    DataSchema::IsString,
+                )]))),
+                exists: None,
+                at: vec![],
+            }),
+        )])),
+    });
+
+    Scenario {
+        name: "json-array-schema".into(),
+        description: "Validate array elements in JSON with `forall`".into(),
+        steps: vec![
+            ScenarioStep::Prose(
+                "The `is-array` schema checks array contents. `forall` requires every \
+                 element to match. `exists` requires at least one. `at` checks specific \
+                 indices."
+                    .into(),
+            ),
+            ScenarioStep::CreateDir {
+                path: SimplePath::new("~/.config").unwrap(),
+            },
+            ScenarioStep::WriteFile {
+                path: SimplePath::new("~/.config/users.json").unwrap(),
+                content: "{\"users\":[{\"name\":\"alice\"},{\"id\":42}]}\n".into(),
+            },
+            ScenarioStep::RunRulesCheck {
+                yaml_content: yaml.clone(),
+            },
+            ScenarioStep::ExpectFailure {
+                messages: vec!["missing key".into()],
+            },
+            ScenarioStep::WriteFile {
+                path: SimplePath::new("~/.config/users.json").unwrap(),
+                content: "{\"users\":[{\"name\":\"alice\"},{\"name\":\"bob\"}]}\n".into(),
             },
             ScenarioStep::RunRulesCheck { yaml_content: yaml },
             ScenarioStep::ExpectSuccess,
@@ -660,7 +724,10 @@ fn scenario_proposition_any() -> Scenario {
 fn scenario_rules_test_command() -> Scenario {
     let prop = Proposition::FileSatisfies {
         path: SimplePath::new("~/.config/app.json").unwrap(),
-        check: FilePredicateAst::JsonMatchesQuery(".settings.theme".into()),
+        check: FilePredicateAst::JsonMatches(DataSchema::IsObject(vec![(
+            "settings".into(),
+            DataSchema::IsObject(vec![("theme".into(), DataSchema::Anything)]),
+        )])),
     };
     let yaml = gen(&prop);
 
@@ -697,7 +764,7 @@ fn scenario_rules_test_command() -> Scenario {
             },
             ScenarioStep::RunRulesTest {
                 yaml_content: yaml,
-                expect_failure_messages: vec!["not found".into()],
+                expect_failure_messages: vec!["missing key".into()],
                 expect_num_failures: Some(1),
             },
             ScenarioStep::ExpectSuccess,

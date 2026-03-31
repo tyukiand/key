@@ -34,6 +34,13 @@ key delete [KEY_ID]        # permanently delete a key
 key pubkey [KEY_ID]        # print the public key to copy to GitHub/GitLab
 key activate [KEY_ID]      # load a key into ssh-agent
 
+# Rules — declarative config checks
+key rules new <FILE>       # create an empty rules file
+key rules add <FILE>       # interactively add a rule
+key rules check <FILE>     # evaluate rules against $HOME
+key rules test <FILE> <DIR> # evaluate rules against a fixture dir
+key rules guide            # print the full rules syntax guide
+
 # Diagnostics
 key status                 # run this to understand current state
 key help                   # show usage

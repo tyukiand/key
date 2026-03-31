@@ -118,6 +118,13 @@ pub enum RulesCommand {
         yaml_path: String,
     },
 
+    /// Create a new empty rules file (vacuously valid `all: []`)
+    #[command(name = "new")]
+    New {
+        /// Path for the new YAML rules file
+        yaml_path: String,
+    },
+
     /// Print a guide explaining the rules YAML syntax with examples
     #[command(name = "guide")]
     Guide,

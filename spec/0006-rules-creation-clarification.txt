@@ -1,0 +1,22 @@
+1. It's currently unclear what the meaning of json-matches actually is.\
+   It should be possible to say: "there is a JSON-entity satisfying this or that schema"
+   For this, one must be able to assert the following properties about json:
+     - there is any json entity (true)
+     - there is a string
+     - there is a string matching regex
+     - there is an object-with-keys-with properties (allow wildcards catching irrelevant properties)
+     - there is an array, on which forall / exist elements with property
+     - there is an array, where at a fixed index, there is an element satisfying the property
+     - and so on and so forth.
+
+  It would be highly preferable to include good examples in the guide, and add a generation tree in pretty much the same way we added rules for files
+  (after all, json structures and file systems are hierarchical gizmos with string content somewhere at the end, so it's conceptually similar)
+  Unless there is some standard json-checking scheme (same: a standard yaml scheme checking), we should create a scheme that fits both json and yaml
+  in the same style we did already for files.
+
+2. In the creation dialog where we create tree-shaped predicates / propositions, it should be able to "undo" a step and go back one level.
+   This would probably result in the recursive subtree-generation methods being allowed to return a "Aborted"-marker, upon seeing which the
+   caller is obliged to retry (note that it should be able to "progress upwards", cancelling multiple recently chosen steps).
+
+3. There should be something like 'key rules new file-path' creating vacuously valid file with `all-empty`, so that it can be loaded and extended with `key rules add` later (currently, it's complaining that an empty file is invalid; It should insteda suggest to run `key rules new file-path.yaml` instead.
+

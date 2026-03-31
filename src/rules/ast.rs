@@ -1,6 +1,38 @@
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
+/// Schema for validating JSON/YAML data structures.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DataSchema {
+    /// Matches any value (keyword: `anything`).
+    Anything,
+    /// Value must be a string.
+    IsString,
+    /// Value must be a string matching a regex.
+    IsStringMatching(String),
+    /// Value must be a number.
+    IsNumber,
+    /// Value must be a boolean.
+    IsBool,
+    /// Value must be null.
+    IsNull,
+    /// Value must be an object with (at least) these keys satisfying sub-schemas.
+    IsObject(Vec<(String, DataSchema)>),
+    /// Value must be an array satisfying the given constraints.
+    IsArray(DataArrayCheck),
+}
+
+/// Constraints on array elements.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataArrayCheck {
+    /// Every element must match this schema.
+    pub forall: Option<Box<DataSchema>>,
+    /// At least one element must match this schema.
+    pub exists: Option<Box<DataSchema>>,
+    /// Specific indices must match their schemas.
+    pub at: Vec<(u32, DataSchema)>,
+}
+
 /// A validated path that starts with `~/` and contains no `.`, `..`, or `//` segments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimplePath(String);
@@ -48,8 +80,8 @@ pub enum FilePredicateAst {
     ShellAddsToPath(String),
     PropertiesDefinesKey(String),
     XmlMatchesPath(String),
-    JsonMatchesQuery(String),
-    YamlMatchesQuery(String),
+    JsonMatches(DataSchema),
+    YamlMatches(DataSchema),
     All(Vec<FilePredicateAst>),
     Any {
         hint: String,
@@ -69,8 +101,8 @@ impl FilePredicateAst {
             FilePredicateAst::ShellAddsToPath(_) => "shell-adds-to-path",
             FilePredicateAst::PropertiesDefinesKey(_) => "properties-defines-key",
             FilePredicateAst::XmlMatchesPath(_) => "xml-matches",
-            FilePredicateAst::JsonMatchesQuery(_) => "json-matches",
-            FilePredicateAst::YamlMatchesQuery(_) => "yaml-matches",
+            FilePredicateAst::JsonMatches(_) => "json-matches",
+            FilePredicateAst::YamlMatches(_) => "yaml-matches",
             FilePredicateAst::All(_) => "all",
             FilePredicateAst::Any { .. } => "any",
         }
@@ -153,13 +185,45 @@ pub fn all_predicate_variants() -> Vec<FilePredicateAst> {
         FilePredicateAst::ShellAddsToPath("MY_DIR".into()),
         FilePredicateAst::PropertiesDefinesKey("my.key".into()),
         FilePredicateAst::XmlMatchesPath("root/child".into()),
-        FilePredicateAst::JsonMatchesQuery(".key.sub".into()),
-        FilePredicateAst::YamlMatchesQuery(".key.sub".into()),
+        FilePredicateAst::JsonMatches(DataSchema::IsObject(vec![(
+            "key".into(),
+            DataSchema::IsString,
+        )])),
+        FilePredicateAst::YamlMatches(DataSchema::IsObject(vec![(
+            "key".into(),
+            DataSchema::IsString,
+        )])),
         FilePredicateAst::All(vec![FilePredicateAst::FileExists]),
         FilePredicateAst::Any {
             hint: "try this".into(),
             checks: vec![FilePredicateAst::FileExists],
         },
+    ]
+}
+
+#[cfg(test)]
+pub fn all_data_schema_variants() -> Vec<DataSchema> {
+    vec![
+        DataSchema::Anything,
+        DataSchema::IsString,
+        DataSchema::IsStringMatching("^test.*".into()),
+        DataSchema::IsNumber,
+        DataSchema::IsBool,
+        DataSchema::IsNull,
+        DataSchema::IsObject(vec![
+            ("name".into(), DataSchema::IsString),
+            ("count".into(), DataSchema::IsNumber),
+        ]),
+        DataSchema::IsArray(DataArrayCheck {
+            forall: Some(Box::new(DataSchema::IsString)),
+            exists: None,
+            at: vec![],
+        }),
+        DataSchema::IsArray(DataArrayCheck {
+            forall: None,
+            exists: Some(Box::new(DataSchema::IsNumber)),
+            at: vec![(0, DataSchema::IsString)],
+        }),
     ]
 }
 

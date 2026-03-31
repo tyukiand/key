@@ -51,7 +51,19 @@ key pubkey [KEY_ID]                 print the public key to copy to GitHub/GitLa
 key amend <FIELD> <VALUE> [KEY_ID]  update password-storage hint or comment
 ```
 
-### 5. Check state
+### 5. Rules — declarative config checks
+
+Verify that your system has the right files, environment variables, and config structure:
+
+```
+key rules new <FILE>                create an empty rules file
+key rules add <FILE>                interactively add a rule
+key rules check <FILE>              evaluate rules against $HOME
+key rules test <FILE> <DIR>         evaluate against a fixture directory
+key rules guide                     print the full rules syntax guide
+```
+
+### 6. Check state
 
 ```
 key status                          run this to understand current state

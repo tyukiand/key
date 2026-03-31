@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_yaml::{Mapping, Value};
 
-use crate::rules::ast::{FilePredicateAst, Proposition, SimplePath};
+use crate::rules::ast::{DataArrayCheck, DataSchema, FilePredicateAst, Proposition, SimplePath};
 
 fn mget<'a>(m: &'a Mapping, key: &str) -> Option<&'a Value> {
     m.get(Value::String(key.to_string()))
@@ -26,6 +26,112 @@ fn parse_file_list(value: &Value) -> Result<Vec<SimplePath>> {
         .as_sequence()
         .ok_or_else(|| anyhow!("'files' must be a list of paths, got {:?}", value))?;
     seq.iter().map(parse_simple_path).collect()
+}
+
+/// Parse a serde_yaml::Value as a DataSchema.
+pub fn parse_data_schema(value: &Value) -> Result<DataSchema> {
+    match value {
+        Value::String(s) => match s.as_str() {
+            "anything" => Ok(DataSchema::Anything),
+            "is-string" => Ok(DataSchema::IsString),
+            "is-number" => Ok(DataSchema::IsNumber),
+            "is-bool" => Ok(DataSchema::IsBool),
+            "is-null" => Ok(DataSchema::IsNull),
+            _ => bail!(
+                "Unknown data schema keyword: {:?}. Valid bare keywords: \
+                 anything, is-string, is-number, is-bool, is-null. \
+                 For structured checks use a mapping (is-string-matching, is-object, is-array).",
+                s
+            ),
+        },
+        Value::Mapping(m) => {
+            if m.len() != 1 {
+                bail!(
+                    "Data schema mapping must have exactly one key, got {}",
+                    m.len()
+                );
+            }
+            let (k, v) = m.iter().next().unwrap();
+            let key = k
+                .as_str()
+                .ok_or_else(|| anyhow!("Data schema key must be a string, got {:?}", k))?;
+            match key {
+                "is-string-matching" => {
+                    let regex = require_string(v, "is-string-matching")?;
+                    Ok(DataSchema::IsStringMatching(regex))
+                }
+                "is-object" => {
+                    let obj = v
+                        .as_mapping()
+                        .ok_or_else(|| anyhow!("is-object requires a mapping of key: schema"))?;
+                    let mut entries = Vec::new();
+                    for (ok, ov) in obj.iter() {
+                        let key_name = ok.as_str().ok_or_else(|| {
+                            anyhow!("is-object key must be a string, got {:?}", ok)
+                        })?;
+                        let sub = parse_data_schema(ov)
+                            .with_context(|| format!("in is-object key {:?}", key_name))?;
+                        entries.push((key_name.to_string(), sub));
+                    }
+                    Ok(DataSchema::IsObject(entries))
+                }
+                "is-array" => {
+                    let arr_m = v.as_mapping().ok_or_else(|| {
+                        anyhow!("is-array requires a mapping with forall/exists/at")
+                    })?;
+                    let forall = if let Some(fv) = mget(arr_m, "forall") {
+                        Some(Box::new(
+                            parse_data_schema(fv).context("in is-array forall")?,
+                        ))
+                    } else {
+                        None
+                    };
+                    let exists = if let Some(ev) = mget(arr_m, "exists") {
+                        Some(Box::new(
+                            parse_data_schema(ev).context("in is-array exists")?,
+                        ))
+                    } else {
+                        None
+                    };
+                    let mut at = Vec::new();
+                    if let Some(at_v) = mget(arr_m, "at") {
+                        let at_m = at_v.as_mapping().ok_or_else(|| {
+                            anyhow!("is-array 'at' must be a mapping of index: schema")
+                        })?;
+                        for (ak, av) in at_m.iter() {
+                            let idx = match ak {
+                                Value::Number(n) => n.as_u64().ok_or_else(|| {
+                                    anyhow!("array index must be a non-negative integer")
+                                })? as u32,
+                                Value::String(s) => s.parse::<u32>().map_err(|_| {
+                                    anyhow!(
+                                        "array index must be a non-negative integer, got {:?}",
+                                        s
+                                    )
+                                })?,
+                                _ => bail!("array index must be a number, got {:?}", ak),
+                            };
+                            at.push((
+                                idx,
+                                parse_data_schema(av)
+                                    .with_context(|| format!("in is-array at index {}", idx))?,
+                            ));
+                        }
+                    }
+                    Ok(DataSchema::IsArray(DataArrayCheck { forall, exists, at }))
+                }
+                _ => bail!(
+                    "Unknown data schema key: {:?}. Valid keys: \
+                     is-string-matching, is-object, is-array",
+                    key
+                ),
+            }
+        }
+        _ => bail!(
+            "Expected a data schema (string keyword or mapping), got {:?}",
+            value
+        ),
+    }
 }
 
 /// Parse a single key-value pair as a FilePredicateAst.
@@ -65,12 +171,12 @@ fn parse_predicate_kv(key: &str, value: &Value) -> Result<FilePredicateAst> {
             Ok(FilePredicateAst::XmlMatchesPath(s))
         }
         "json-matches" => {
-            let s = require_string(value, "json-matches")?;
-            Ok(FilePredicateAst::JsonMatchesQuery(s))
+            let schema = parse_data_schema(value).context("parsing json-matches data schema")?;
+            Ok(FilePredicateAst::JsonMatches(schema))
         }
         "yaml-matches" => {
-            let s = require_string(value, "yaml-matches")?;
-            Ok(FilePredicateAst::YamlMatchesQuery(s))
+            let schema = parse_data_schema(value).context("parsing yaml-matches data schema")?;
+            Ok(FilePredicateAst::YamlMatches(schema))
         }
         "all" => {
             let seq = value
@@ -233,6 +339,12 @@ pub fn parse_proposition(value: &Value) -> Result<Proposition> {
 }
 
 #[cfg(test)]
+pub fn parse_data_schema_from_str(yaml: &str) -> Result<DataSchema> {
+    let value: Value = serde_yaml::from_str(yaml).context("Invalid YAML")?;
+    parse_data_schema(&value)
+}
+
+#[cfg(test)]
 pub fn parse_predicate_from_str(yaml: &str) -> Result<FilePredicateAst> {
     let value: Value = serde_yaml::from_str(yaml).context("Invalid YAML")?;
     parse_predicate(&value)
@@ -290,6 +402,34 @@ mod tests {
                 prop.yaml_key(),
                 yaml_str
             );
+        }
+    }
+
+    #[test]
+    fn roundtrip_data_schema_variants() {
+        for schema in all_data_schema_variants() {
+            let yaml_str = generate::generate_data_schema_string(&schema);
+            let parsed = parse_data_schema_from_str(&yaml_str).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to parse generated YAML for DataSchema: {}\nYAML:\n{}",
+                    e, yaml_str
+                )
+            });
+            assert_eq!(
+                parsed, schema,
+                "Roundtrip failed for DataSchema\nYAML:\n{}",
+                yaml_str
+            );
+        }
+    }
+
+    #[test]
+    fn pretty_print_idempotence_data_schemas() {
+        for schema in all_data_schema_variants() {
+            let yaml1 = generate::generate_data_schema_string(&schema);
+            let parsed = parse_data_schema_from_str(&yaml1).unwrap();
+            let yaml2 = generate::generate_data_schema_string(&parsed);
+            assert_eq!(yaml1, yaml2, "Idempotence failed for DataSchema");
         }
     }
 

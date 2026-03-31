@@ -294,25 +294,40 @@ mod tests {
     }
 
     #[test]
-    fn json_matches_query() {
+    fn json_matches_schema() {
+        use crate::rules::ast::DataSchema;
         let home = with_temp_home(|h| {
             std::fs::write(h.join("data.json"), r#"{"user":{"name":"alice"}}"#).unwrap();
         });
         let prop = Proposition::FileSatisfies {
             path: SimplePath::new("~/data.json").unwrap(),
-            check: FilePredicateAst::JsonMatchesQuery(".user.name".into()),
+            check: FilePredicateAst::JsonMatches(DataSchema::IsObject(vec![(
+                "user".into(),
+                DataSchema::IsObject(vec![("name".into(), DataSchema::IsString)]),
+            )])),
         };
         assert!(evaluate(&prop, home.path()).is_ok());
     }
 
     #[test]
-    fn yaml_matches_query() {
+    fn yaml_matches_schema() {
+        use crate::rules::ast::{DataArrayCheck, DataSchema};
         let home = with_temp_home(|h| {
             std::fs::write(h.join("cfg.yaml"), "models:\n  - name: gpt4\n").unwrap();
         });
         let prop = Proposition::FileSatisfies {
             path: SimplePath::new("~/cfg.yaml").unwrap(),
-            check: FilePredicateAst::YamlMatchesQuery("models[0].name".into()),
+            check: FilePredicateAst::YamlMatches(DataSchema::IsObject(vec![(
+                "models".into(),
+                DataSchema::IsArray(DataArrayCheck {
+                    forall: None,
+                    exists: None,
+                    at: vec![(
+                        0,
+                        DataSchema::IsObject(vec![("name".into(), DataSchema::IsString)]),
+                    )],
+                }),
+            )])),
         };
         assert!(evaluate(&prop, home.path()).is_ok());
     }

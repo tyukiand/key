@@ -1,10 +1,54 @@
-use crate::rules::ast::{FilePredicateAst, Proposition};
+use crate::rules::ast::{DataSchema, FilePredicateAst, Proposition};
 use serde_yaml::{Mapping, Value};
 
 fn mk(key: &str, value: Value) -> Value {
     let mut m = Mapping::new();
     m.insert(Value::String(key.into()), value);
     Value::Mapping(m)
+}
+
+pub fn generate_data_schema(schema: &DataSchema) -> Value {
+    match schema {
+        DataSchema::Anything => Value::String("anything".into()),
+        DataSchema::IsString => Value::String("is-string".into()),
+        DataSchema::IsStringMatching(re) => mk("is-string-matching", Value::String(re.clone())),
+        DataSchema::IsNumber => Value::String("is-number".into()),
+        DataSchema::IsBool => Value::String("is-bool".into()),
+        DataSchema::IsNull => Value::String("is-null".into()),
+        DataSchema::IsObject(entries) => {
+            let mut m = Mapping::new();
+            for (key, sub) in entries {
+                m.insert(Value::String(key.clone()), generate_data_schema(sub));
+            }
+            mk("is-object", Value::Mapping(m))
+        }
+        DataSchema::IsArray(check) => {
+            let mut m = Mapping::new();
+            if let Some(ref f) = check.forall {
+                m.insert(Value::String("forall".into()), generate_data_schema(f));
+            }
+            if let Some(ref e) = check.exists {
+                m.insert(Value::String("exists".into()), generate_data_schema(e));
+            }
+            if !check.at.is_empty() {
+                let mut at_m = Mapping::new();
+                for (idx, sub) in &check.at {
+                    at_m.insert(
+                        Value::Number((*idx as u64).into()),
+                        generate_data_schema(sub),
+                    );
+                }
+                m.insert(Value::String("at".into()), Value::Mapping(at_m));
+            }
+            mk("is-array", Value::Mapping(m))
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn generate_data_schema_string(schema: &DataSchema) -> String {
+    let value = generate_data_schema(schema);
+    serde_yaml::to_string(&value).expect("failed to serialize data schema")
 }
 
 pub fn generate_predicate(pred: &FilePredicateAst) -> Value {
@@ -38,8 +82,8 @@ pub fn generate_predicate(pred: &FilePredicateAst) -> Value {
             mk("properties-defines-key", Value::String(key_name.clone()))
         }
         FilePredicateAst::XmlMatchesPath(path) => mk("xml-matches", Value::String(path.clone())),
-        FilePredicateAst::JsonMatchesQuery(q) => mk("json-matches", Value::String(q.clone())),
-        FilePredicateAst::YamlMatchesQuery(q) => mk("yaml-matches", Value::String(q.clone())),
+        FilePredicateAst::JsonMatches(schema) => mk("json-matches", generate_data_schema(schema)),
+        FilePredicateAst::YamlMatches(schema) => mk("yaml-matches", generate_data_schema(schema)),
         FilePredicateAst::All(preds) => {
             let items: Vec<Value> = preds.iter().map(generate_predicate).collect();
             mk("all", Value::Sequence(items))
