@@ -1,0 +1,116 @@
+This spec amends / overrides some points that were said previously.
+
+1. We do not need messages / hints attached to isolated predicates.
+2. Predicates and proposition now get Negation (not A) and Implication (A => B)
+2.2 the implication is interpreted as a conditionally executed check:
+    (A => B) means that if A is false, then B does not matter (and is not checked),
+    whereas if A is true, then B matters, and is checked, and becomes the outcome.
+2.3 Syntactically, consider something like
+
+```
+   conditionally:
+     if: condition
+     then: actual check
+```
+(rough sketch, up to AI to decide)
+
+
+3. The return type of interpreting the propositions and predicates becomes a plain boolean, we don't need to collect lists of error message details etc.
+4. At the top-level, instead of having a long "all propositions must hold"-proposition, we introduce (audit) 'Controls':
+
+   - The top-level configuration file is just a list of `Control`s
+   - A `Control` has an ID, which is a short identifier with [A-Z][A-Z0-9-]*, and which must be unique within a file.
+   - A `Control` has a "Title" - a terse description of what is checked (but clear enough to e.g. understand what tool / what settings file is checked), used in one-line outputs of audit checks later
+   - A `Control` has a general description (what the problem is), a string
+   - A `Control` has remediation instructions, which is again a plain string explaining how to set it up, where
+     to get the tokens etc.
+
+5. It was unclear what `rules` in  `key rules` actually referred to, as there are no fixed rules anyway, only one big compositional proposition. We remove the `rules` and instead create sub-operation `key audit`, so now `key rules` subcommand becomes replaced by `key audit` for running checks against a .yaml file, and `key audit`'s subcommands allowing to create / modify .yaml files; Some of the several sub-operations must be implemented from scratch:
+
+  - `key audit new <thefile.yaml>` creates a single file (emply list of controls) (--single-file inferred from .yaml)
+
+  - `key audit add thefile.yaml` adds a single check (control) as before `key rules add` (interactively adds a new control, but now asks for title, description, remediation instruction, and only then for the proposition / predicate)
+  - `key audit list f.yaml` for cleanly listing the controls in a well readable form (not as yaml, nicer printed)
+  - `key audit list --short f.yaml` only titles
+  - `key audit delete thefile.yaml` interactively listing only the titles, and then deleting the control from the file cleanly
+  - `key audit delete <control-id> <thefile.yaml>` deletes a control by its ID
+  - `key audit delete --id <control-id> --file <thefile.yaml>` same as above, but with positional inputs named explicitly
+  - `key audit <thefile.yaml>` - performs the actual audit on $HOME
+      - options to override $HOME as before
+      - new repeatable option to `--ignore <control-id>` (multiple possible) to exclude controls from results
+      - similar repeatable `--warn-only <control-id>` for non-fatal failed checks, which should be reported with yellow warning
+      - new audit output, with green pass checkmarks or red crosses, similar to a testing framework output
+
+# The `audit`-projects
+
+The `audit` subcommands define an entire tiny "build toolchain" that allows to set up a new project
+(with main code and tests and resources), then run the tests, then "build" the artifact.
+
+6. `key audit project new <mandatory-simple-name>` sets up a canonical project structure 
+    in subdirectory ./<mandatory-simple-name> (simple in the sense of no FS-colliding nonsense, as already defined
+    elsewhere). The goal of a "project" is to create a good configuration file
+    (here, the deliverable becomes the .yaml file itself, not the audit outcome!!)
+
+    Canonical structure is:
+      <mandatory-simple-name>
+        ./src/main/<mandatory-simple-name>.yaml // initially with just `controls: []`
+        ./src/test/tests.yaml    // a separate test-definition, for testing the controls in the main (not user's $HOME!!)
+        ./src/test/resources     // here, test fixtures live
+            // convention is:
+            // CTRL-0001-valid
+            // CTRL-0001-invalid // for simple controls, which are also os-independent
+            //
+            // CTRL-0002-valid
+            // CTRL-0002-valid-alternative
+            // CTRL-0002-invalid-no-username
+            // CTRL-0002-invalid-no-token // for more complex controls, still os-independent
+            //
+            // CTRL-0003-macos-valid
+            // CTRL-0003-macos-valid-alt2
+            // CTRL-0003-macos-valid-alt3
+            // CTRL-0003-macos-invalid-no-username
+            // CTRL-0003-linux-valid        // and so on and so forth, various cases, sorted by conrol-id, os,
+            //                              // possibly further properties, dependent on the specific use case
+         .gitignore   // ignore ./target
+
+    and it should be made clear that `resources` contains separate little fixture directories, which by default
+    map directly to HOME (but which also allow to specify a fake HOME and a fake ROOT separately)
+  - the idea of `tests.yaml` is to define multiple TestSuites (named conjunctions of tests), with multiple tests,
+    where every test:
+      - stores the ID of the tested rule
+      - stores a clear one-line explanation of what's tested (shared repetitive context can be pushed up into TestSuite containing the actual test)
+      - fixture name (./src/test/resources prefix can be skipped, jump directly to CTRL-0003-macos-valid etc.)
+      - expected failures, if any (total number, or, preferably, patters of error messages)
+
+  The whole point of this test setup is that `key audit project test` will check that it sees a ./src with
+  ./src/main/something.yaml and ./src/test/resources and ./src/test/tests.yaml, and then load both the controls
+  from the main and the assertions from the tests, and run it like a normal test suite for any other language
+  (except that your config.yaml are deliberately non-turing complete, safe and fast, but there is still no reason
+   not to treat them as proper software)
+
+  `key audit project build` currently would 
+
+      - verify that  main code parses
+      - verify that test code parses
+      - run the tests
+      - if tests successful, copy the ./src/main/stuff.yaml into ./targe/stuff.yaml
+      
+  `key audit project clean` deletes ./target
+  `key audit project run <optional-home-override>` runs the normal audit on either the override-$HOME, or the actual $HOME
+
+
+Finally, once we have obtained all the .yaml files we wanted (through single file creation, manual writing, or systematic project setup & testing), we can do:
+
+     `key audit install config.yaml` // will save it into ./.key/audit-configs/config.yaml
+     `key audit` will present the list of available configs that are "installed", let user pick one, and
+        run it on $HOME
+
+Overall, `key audit project` should give us the full toolchain to create high-quality tested configurations,
+`key audit add / list / delete` should allow us to modify the config file in a systematic way, without having to worry about the syntax too much, and `key audit install` and `key audit` should let us run everything in a hassle-free way once we have the desired .yaml.
+
+The guide must be kept up-to date, and written in such a way that every change in the source code breaks the build, without letting the guide diverge from the truth.
+
+Same for help: must be detailed and clear, subsections of help/guide must explain comprehensively all the syntax (examples again generated from actual compiled ASTs)
+
+Same for the `test.yaml` - it has a separate AST-like structure, and needs separate attention in the guide.
+

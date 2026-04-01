@@ -1,7 +1,10 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_yaml::{Mapping, Value};
 
-use crate::rules::ast::{DataArrayCheck, DataSchema, FilePredicateAst, Proposition, SimplePath};
+use crate::rules::ast::{
+    Control, ControlFile, DataArrayCheck, DataSchema, FailExpectation, FilePredicateAst,
+    Proposition, SimplePath, TestCase, TestExpectation, TestFile, TestSuite,
+};
 
 fn mget<'a>(m: &'a Mapping, key: &str) -> Option<&'a Value> {
     m.get(Value::String(key.to_string()))
@@ -142,6 +145,10 @@ fn parse_predicate_kv(key: &str, value: &Value) -> Result<FilePredicateAst> {
             let s = require_string(value, "text-matches")?;
             Ok(FilePredicateAst::TextMatchesRegex(s))
         }
+        "text-contains" => {
+            let s = require_string(value, "text-contains")?;
+            Ok(FilePredicateAst::TextContains(s))
+        }
         "text-has-lines" => {
             let m = value
                 .as_mapping()
@@ -204,10 +211,30 @@ fn parse_predicate_kv(key: &str, value: &Value) -> Result<FilePredicateAst> {
                 checks: checks?,
             })
         }
+        "not" => {
+            let inner = parse_predicate(value).context("parsing 'not' predicate")?;
+            Ok(FilePredicateAst::Not(Box::new(inner)))
+        }
+        "conditionally" => {
+            let m = value.as_mapping().ok_or_else(|| {
+                anyhow!("'conditionally' (predicate) requires a mapping with 'if' and 'then'")
+            })?;
+            let cond_val = mget(m, "if")
+                .ok_or_else(|| anyhow!("'conditionally' (predicate) requires an 'if' field"))?;
+            let then_val = mget(m, "then")
+                .ok_or_else(|| anyhow!("'conditionally' (predicate) requires a 'then' field"))?;
+            let condition = parse_predicate(cond_val).context("parsing 'conditionally.if'")?;
+            let then = parse_predicate(then_val).context("parsing 'conditionally.then'")?;
+            Ok(FilePredicateAst::Conditionally {
+                condition: Box::new(condition),
+                then: Box::new(then),
+            })
+        }
         _ => bail!(
             "Unknown predicate key: {:?}. Valid keys: file-exists, text-matches, \
-             text-has-lines, shell-exports, shell-defines, shell-adds-to-path, \
-             properties-defines-key, xml-matches, json-matches, yaml-matches, all, any",
+             text-contains, text-has-lines, shell-exports, shell-defines, shell-adds-to-path, \
+             properties-defines-key, xml-matches, json-matches, yaml-matches, all, any, \
+             not, conditionally",
             key,
         ),
     }
@@ -331,8 +358,28 @@ pub fn parse_proposition(value: &Value) -> Result<Proposition> {
             let props: Result<Vec<_>> = seq.iter().map(parse_proposition).collect();
             Ok(Proposition::Any(props?))
         }
+        "not" => {
+            let inner = parse_proposition(v).context("parsing 'not' proposition")?;
+            Ok(Proposition::Not(Box::new(inner)))
+        }
+        "conditionally" => {
+            let inner = v.as_mapping().ok_or_else(|| {
+                anyhow!("'conditionally' proposition requires a mapping with 'if' and 'then'")
+            })?;
+            let cond_val = mget(inner, "if")
+                .ok_or_else(|| anyhow!("'conditionally' proposition requires an 'if' field"))?;
+            let then_val = mget(inner, "then")
+                .ok_or_else(|| anyhow!("'conditionally' proposition requires a 'then' field"))?;
+            let condition = parse_proposition(cond_val).context("parsing 'conditionally.if'")?;
+            let then = parse_proposition(then_val).context("parsing 'conditionally.then'")?;
+            Ok(Proposition::Conditionally {
+                condition: Box::new(condition),
+                then: Box::new(then),
+            })
+        }
         _ => bail!(
-            "Unknown proposition key: {:?}. Valid keys: file, forall, exists, all, any",
+            "Unknown proposition key: {:?}. Valid keys: file, forall, exists, all, any, \
+             not, conditionally",
             key,
         ),
     }
@@ -350,6 +397,202 @@ pub fn parse_predicate_from_str(yaml: &str) -> Result<FilePredicateAst> {
     parse_predicate(&value)
 }
 
+pub fn parse_control(value: &Value) -> Result<Control> {
+    let m = value
+        .as_mapping()
+        .ok_or_else(|| anyhow!("A control must be a YAML mapping"))?;
+    let id = mget(m, "id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Control requires an 'id' string field"))?
+        .to_string();
+    crate::rules::ast::validate_control_id(&id)?;
+    let title = mget(m, "title")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Control requires a 'title' string field"))?
+        .to_string();
+    let description = mget(m, "description")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Control requires a 'description' string field"))?
+        .to_string();
+    let remediation = mget(m, "remediation")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Control requires a 'remediation' string field"))?
+        .to_string();
+    let check_val = mget(m, "check")
+        .ok_or_else(|| anyhow!("Control requires a 'check' field (proposition)"))?;
+    let check = parse_proposition(check_val).context("parsing control check")?;
+    Ok(Control {
+        id,
+        title,
+        description,
+        remediation,
+        check,
+    })
+}
+
+pub fn parse_control_file(yaml: &str) -> Result<ControlFile> {
+    let value: Value = serde_yaml::from_str(yaml).context("Invalid YAML")?;
+    let m = value
+        .as_mapping()
+        .ok_or_else(|| anyhow!("Control file must be a YAML mapping with a 'controls' key"))?;
+    let controls_val =
+        mget(m, "controls").ok_or_else(|| anyhow!("Control file must have a 'controls' key"))?;
+    let seq = controls_val
+        .as_sequence()
+        .ok_or_else(|| anyhow!("'controls' must be a list"))?;
+    let mut controls = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    for (i, item) in seq.iter().enumerate() {
+        let control =
+            parse_control(item).with_context(|| format!("parsing control at index {}", i))?;
+        if !seen_ids.insert(control.id.clone()) {
+            bail!("Duplicate control ID: {:?}", control.id);
+        }
+        controls.push(control);
+    }
+    Ok(ControlFile { controls })
+}
+
+// ---------------------------------------------------------------------------
+// TestAst parsing
+// ---------------------------------------------------------------------------
+
+pub fn parse_test_expectation(value: &Value) -> Result<TestExpectation> {
+    match value {
+        Value::String(s) => match s.as_str() {
+            "pass" => Ok(TestExpectation::Pass),
+            "fail" => Ok(TestExpectation::Fail(FailExpectation {
+                count: None,
+                messages: vec![],
+            })),
+            _ => bail!(
+                "Unknown test expectation: {:?}. Valid values: pass, fail",
+                s
+            ),
+        },
+        Value::Mapping(m) => {
+            if m.len() != 1 {
+                bail!(
+                    "Test expectation mapping must have exactly one key, got {}",
+                    m.len()
+                );
+            }
+            let (k, v) = m.iter().next().unwrap();
+            let key = k
+                .as_str()
+                .ok_or_else(|| anyhow!("Test expectation key must be a string, got {:?}", k))?;
+            match key {
+                "fail" => {
+                    let inner = v.as_mapping().ok_or_else(|| {
+                        anyhow!("fail expectation requires a mapping with optional count/messages")
+                    })?;
+                    let count = mget(inner, "count")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize);
+                    let messages = if let Some(msgs_val) = mget(inner, "messages") {
+                        let seq = msgs_val
+                            .as_sequence()
+                            .ok_or_else(|| anyhow!("'messages' must be a list of strings"))?;
+                        seq.iter()
+                            .map(|v| require_string(v, "messages item"))
+                            .collect::<Result<Vec<_>>>()?
+                    } else {
+                        vec![]
+                    };
+                    Ok(TestExpectation::Fail(FailExpectation { count, messages }))
+                }
+                _ => bail!("Unknown test expectation key: {:?}. Valid keys: fail", key),
+            }
+        }
+        _ => bail!(
+            "Expected a test expectation (string or mapping), got {:?}",
+            value
+        ),
+    }
+}
+
+pub fn parse_test_case(value: &Value) -> Result<TestCase> {
+    let m = value
+        .as_mapping()
+        .ok_or_else(|| anyhow!("A test case must be a YAML mapping"))?;
+    let control_id = mget(m, "control-id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Test case requires a 'control-id' string field"))?
+        .to_string();
+    let description = mget(m, "description")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Test case requires a 'description' string field"))?
+        .to_string();
+    let fixture = mget(m, "fixture")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Test case requires a 'fixture' string field"))?
+        .to_string();
+    let expect_val =
+        mget(m, "expect").ok_or_else(|| anyhow!("Test case requires an 'expect' field"))?;
+    let expect = parse_test_expectation(expect_val).context("parsing test case expect")?;
+    Ok(TestCase {
+        control_id,
+        description,
+        fixture,
+        expect,
+    })
+}
+
+pub fn parse_test_suite(value: &Value) -> Result<TestSuite> {
+    let m = value
+        .as_mapping()
+        .ok_or_else(|| anyhow!("A test suite must be a YAML mapping"))?;
+    let name = mget(m, "name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Test suite requires a 'name' string field"))?
+        .to_string();
+    let description = mget(m, "description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let tests_val =
+        mget(m, "tests").ok_or_else(|| anyhow!("Test suite requires a 'tests' list"))?;
+    let seq = tests_val
+        .as_sequence()
+        .ok_or_else(|| anyhow!("'tests' must be a list"))?;
+    let mut tests = Vec::new();
+    for (i, item) in seq.iter().enumerate() {
+        tests.push(
+            parse_test_case(item).with_context(|| format!("parsing test case at index {}", i))?,
+        );
+    }
+    Ok(TestSuite {
+        name,
+        description,
+        tests,
+    })
+}
+
+pub fn parse_test_file(yaml: &str) -> Result<TestFile> {
+    let value: Value = serde_yaml::from_str(yaml).context("Invalid YAML")?;
+    let m = value
+        .as_mapping()
+        .ok_or_else(|| anyhow!("Test file must be a YAML mapping with a 'test-suites' key"))?;
+    let suites_val =
+        mget(m, "test-suites").ok_or_else(|| anyhow!("Test file must have a 'test-suites' key"))?;
+    let seq = suites_val
+        .as_sequence()
+        .ok_or_else(|| anyhow!("'test-suites' must be a list"))?;
+    let mut test_suites = Vec::new();
+    for (i, item) in seq.iter().enumerate() {
+        test_suites.push(
+            parse_test_suite(item).with_context(|| format!("parsing test suite at index {}", i))?,
+        );
+    }
+    Ok(TestFile { test_suites })
+}
+
+#[cfg(test)]
+pub fn parse_test_expectation_from_str(yaml: &str) -> Result<TestExpectation> {
+    let value: Value = serde_yaml::from_str(yaml).context("Invalid YAML")?;
+    parse_test_expectation(&value)
+}
+
+#[cfg(test)]
 pub fn parse_proposition_from_str(yaml: &str) -> Result<Proposition> {
     let value: Value = serde_yaml::from_str(yaml).context("Invalid YAML")?;
     parse_proposition(&value)
@@ -537,5 +780,155 @@ all:
             Proposition::All(items) => assert_eq!(items.len(), 2),
             other => panic!("Expected All, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn roundtrip_control_file() {
+        use crate::rules::ast::{Control, ControlFile};
+        let cf = ControlFile {
+            controls: vec![
+                Control {
+                    id: "SSH-KEY".into(),
+                    title: "SSH key exists".into(),
+                    description: "Check SSH key".into(),
+                    remediation: "Run ssh-keygen".into(),
+                    check: Proposition::FileSatisfies {
+                        path: SimplePath::new("~/.ssh/id_ed25519.pub").unwrap(),
+                        check: FilePredicateAst::FileExists,
+                    },
+                },
+                Control {
+                    id: "JAVA-HOME".into(),
+                    title: "JAVA_HOME is set".into(),
+                    description: "Check JAVA_HOME".into(),
+                    remediation: "Add export JAVA_HOME=...".into(),
+                    check: Proposition::FileSatisfies {
+                        path: SimplePath::new("~/.bashrc").unwrap(),
+                        check: FilePredicateAst::ShellExports("JAVA_HOME".into()),
+                    },
+                },
+            ],
+        };
+        let yaml_str = generate::generate_control_file(&cf);
+        let parsed = parse_control_file(&yaml_str).unwrap();
+        assert_eq!(parsed, cf);
+    }
+
+    #[test]
+    fn parse_control_file_duplicate_id() {
+        let yaml = r#"
+controls:
+  - id: SAME
+    title: First
+    description: d
+    remediation: r
+    check:
+      file:
+        path: ~/a
+        check: file-exists
+  - id: SAME
+    title: Second
+    description: d
+    remediation: r
+    check:
+      file:
+        path: ~/b
+        check: file-exists
+"#;
+        let result = parse_control_file(yaml);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Duplicate"));
+    }
+
+    #[test]
+    fn parse_control_file_invalid_id() {
+        let yaml = r#"
+controls:
+  - id: lower-case
+    title: Bad
+    description: d
+    remediation: r
+    check:
+      file:
+        path: ~/a
+        check: file-exists
+"#;
+        let result = parse_control_file(yaml);
+        assert!(result.is_err());
+        let err_msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            err_msg.contains("Control ID must start with"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    // --- TestAst round-trip tests (invariants 16-19) ---
+
+    #[test]
+    fn roundtrip_test_expectation_variants() {
+        for exp in all_test_expectation_variants() {
+            let yaml_str = generate::generate_test_expectation_string(&exp);
+            let parsed = parse_test_expectation_from_str(&yaml_str).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to parse generated YAML for TestExpectation: {}\nYAML:\n{}",
+                    e, yaml_str
+                )
+            });
+            assert_eq!(
+                parsed, exp,
+                "Roundtrip failed for TestExpectation\nYAML:\n{}",
+                yaml_str
+            );
+        }
+    }
+
+    #[test]
+    fn idempotence_test_expectation() {
+        for exp in all_test_expectation_variants() {
+            let yaml1 = generate::generate_test_expectation_string(&exp);
+            let parsed = parse_test_expectation_from_str(&yaml1).unwrap();
+            let yaml2 = generate::generate_test_expectation_string(&parsed);
+            assert_eq!(yaml1, yaml2, "Idempotence failed for TestExpectation");
+        }
+    }
+
+    #[test]
+    fn variant_count_matches_yaml_keys_test_expectation() {
+        assert_eq!(
+            all_test_expectation_variants().len(),
+            TEST_EXPECTATION_YAML_KEYS.len()
+        );
+    }
+
+    #[test]
+    fn roundtrip_test_file() {
+        use crate::rules::ast::{FailExpectation, TestCase, TestFile, TestSuite};
+        let tf = TestFile {
+            test_suites: vec![TestSuite {
+                name: "SSH checks".into(),
+                description: Some("Verify SSH setup".into()),
+                tests: vec![
+                    TestCase {
+                        control_id: "CTRL-0001".into(),
+                        description: "valid SSH key setup passes".into(),
+                        fixture: "CTRL-0001-valid".into(),
+                        expect: TestExpectation::Pass,
+                    },
+                    TestCase {
+                        control_id: "CTRL-0001".into(),
+                        description: "missing SSH key detected".into(),
+                        fixture: "CTRL-0001-invalid".into(),
+                        expect: TestExpectation::Fail(FailExpectation {
+                            count: Some(1),
+                            messages: vec!["does not exist".into()],
+                        }),
+                    },
+                ],
+            }],
+        };
+        let yaml_str = generate::generate_test_file(&tf);
+        let parsed = parse_test_file(&yaml_str).unwrap();
+        assert_eq!(parsed, tf);
     }
 }

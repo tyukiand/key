@@ -1,4 +1,7 @@
-use crate::rules::ast::{DataSchema, FilePredicateAst, Proposition};
+use crate::rules::ast::{
+    Control, ControlFile, DataSchema, FilePredicateAst, Proposition, TestCase, TestExpectation,
+    TestFile, TestSuite,
+};
 use serde_yaml::{Mapping, Value};
 
 fn mk(key: &str, value: Value) -> Value {
@@ -55,6 +58,7 @@ pub fn generate_predicate(pred: &FilePredicateAst) -> Value {
     match pred {
         FilePredicateAst::FileExists => Value::String("file-exists".into()),
         FilePredicateAst::TextMatchesRegex(re) => mk("text-matches", Value::String(re.clone())),
+        FilePredicateAst::TextContains(s) => mk("text-contains", Value::String(s.clone())),
         FilePredicateAst::TextHasLines { min, max } => {
             let mut m = Mapping::new();
             if let Some(n) = min {
@@ -94,6 +98,13 @@ pub fn generate_predicate(pred: &FilePredicateAst) -> Value {
             let items: Vec<Value> = checks.iter().map(generate_predicate).collect();
             m.insert(Value::String("checks".into()), Value::Sequence(items));
             mk("any", Value::Mapping(m))
+        }
+        FilePredicateAst::Not(inner) => mk("not", generate_predicate(inner)),
+        FilePredicateAst::Conditionally { condition, then } => {
+            let mut m = Mapping::new();
+            m.insert(Value::String("if".into()), generate_predicate(condition));
+            m.insert(Value::String("then".into()), generate_predicate(then));
+            mk("conditionally", Value::Mapping(m))
         }
     }
 }
@@ -137,6 +148,13 @@ pub fn generate_proposition(prop: &Proposition) -> Value {
             let items: Vec<Value> = props.iter().map(generate_proposition).collect();
             mk("any", Value::Sequence(items))
         }
+        Proposition::Not(inner) => mk("not", generate_proposition(inner)),
+        Proposition::Conditionally { condition, then } => {
+            let mut m = Mapping::new();
+            m.insert(Value::String("if".into()), generate_proposition(condition));
+            m.insert(Value::String("then".into()), generate_proposition(then));
+            mk("conditionally", Value::Mapping(m))
+        }
     }
 }
 
@@ -148,4 +166,116 @@ pub fn generate_predicate_string(pred: &FilePredicateAst) -> String {
 pub fn generate_proposition_string(prop: &Proposition) -> String {
     let value = generate_proposition(prop);
     serde_yaml::to_string(&value).expect("failed to serialize proposition")
+}
+
+pub fn generate_control(control: &Control) -> Value {
+    let mut m = Mapping::new();
+    m.insert(
+        Value::String("id".into()),
+        Value::String(control.id.clone()),
+    );
+    m.insert(
+        Value::String("title".into()),
+        Value::String(control.title.clone()),
+    );
+    m.insert(
+        Value::String("description".into()),
+        Value::String(control.description.clone()),
+    );
+    m.insert(
+        Value::String("remediation".into()),
+        Value::String(control.remediation.clone()),
+    );
+    m.insert(
+        Value::String("check".into()),
+        generate_proposition(&control.check),
+    );
+    Value::Mapping(m)
+}
+
+pub fn generate_control_file(cf: &ControlFile) -> String {
+    let mut m = Mapping::new();
+    let controls: Vec<Value> = cf.controls.iter().map(generate_control).collect();
+    m.insert(Value::String("controls".into()), Value::Sequence(controls));
+    serde_yaml::to_string(&Value::Mapping(m)).expect("failed to serialize control file")
+}
+
+// ---------------------------------------------------------------------------
+// TestAst generation
+// ---------------------------------------------------------------------------
+
+pub fn generate_test_expectation(exp: &TestExpectation) -> Value {
+    match exp {
+        TestExpectation::Pass => Value::String("pass".into()),
+        TestExpectation::Fail(fail_exp) => {
+            if fail_exp.count.is_none() && fail_exp.messages.is_empty() {
+                Value::String("fail".into())
+            } else {
+                let mut m = Mapping::new();
+                if let Some(count) = fail_exp.count {
+                    m.insert(
+                        Value::String("count".into()),
+                        Value::Number((count as u64).into()),
+                    );
+                }
+                if !fail_exp.messages.is_empty() {
+                    let msgs: Vec<Value> = fail_exp
+                        .messages
+                        .iter()
+                        .map(|s| Value::String(s.clone()))
+                        .collect();
+                    m.insert(Value::String("messages".into()), Value::Sequence(msgs));
+                }
+                mk("fail", Value::Mapping(m))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn generate_test_expectation_string(exp: &TestExpectation) -> String {
+    let value = generate_test_expectation(exp);
+    serde_yaml::to_string(&value).expect("failed to serialize test expectation")
+}
+
+pub fn generate_test_case(tc: &TestCase) -> Value {
+    let mut m = Mapping::new();
+    m.insert(
+        Value::String("control-id".into()),
+        Value::String(tc.control_id.clone()),
+    );
+    m.insert(
+        Value::String("description".into()),
+        Value::String(tc.description.clone()),
+    );
+    m.insert(
+        Value::String("fixture".into()),
+        Value::String(tc.fixture.clone()),
+    );
+    m.insert(
+        Value::String("expect".into()),
+        generate_test_expectation(&tc.expect),
+    );
+    Value::Mapping(m)
+}
+
+pub fn generate_test_suite(ts: &TestSuite) -> Value {
+    let mut m = Mapping::new();
+    m.insert(Value::String("name".into()), Value::String(ts.name.clone()));
+    if let Some(ref desc) = ts.description {
+        m.insert(
+            Value::String("description".into()),
+            Value::String(desc.clone()),
+        );
+    }
+    let tests: Vec<Value> = ts.tests.iter().map(generate_test_case).collect();
+    m.insert(Value::String("tests".into()), Value::Sequence(tests));
+    Value::Mapping(m)
+}
+
+pub fn generate_test_file(tf: &TestFile) -> String {
+    let mut m = Mapping::new();
+    let suites: Vec<Value> = tf.test_suites.iter().map(generate_test_suite).collect();
+    m.insert(Value::String("test-suites".into()), Value::Sequence(suites));
+    serde_yaml::to_string(&Value::Mapping(m)).expect("failed to serialize test file")
 }

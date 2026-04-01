@@ -77,6 +77,27 @@ fn eval_prop(prop: &Proposition, home_dir: &Path, failures: &mut Vec<RuleFailure
                 failures.extend(branch);
             }
         }
+        Proposition::Not(inner) => {
+            let mut inner_failures = Vec::new();
+            eval_prop(inner, home_dir, &mut inner_failures);
+            if inner_failures.is_empty() {
+                // Inner succeeded → Not fails
+                failures.push(RuleFailure {
+                    path: "(not)".to_string(),
+                    message: "expected check to fail but it passed".to_string(),
+                });
+            }
+            // Inner failed → Not succeeds (do nothing)
+        }
+        Proposition::Conditionally { condition, then } => {
+            let mut cond_failures = Vec::new();
+            eval_prop(condition, home_dir, &mut cond_failures);
+            if cond_failures.is_empty() {
+                // Condition passed → evaluate then-branch
+                eval_prop(then, home_dir, failures);
+            }
+            // Condition failed → vacuously true (do nothing)
+        }
     }
 }
 

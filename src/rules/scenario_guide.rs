@@ -3,7 +3,7 @@ use crate::rules::scenario::{all_scenarios, guide_intro, ScenarioStep};
 /// Render all scenarios as a human-readable guide.
 pub fn render_guide() -> String {
     let mut out = String::new();
-    out.push_str("# key rules — Guide\n\n");
+    out.push_str("# key audit — Guide\n\n");
     out.push_str(&guide_intro());
     out.push('\n');
 
@@ -31,22 +31,22 @@ pub fn render_guide() -> String {
                 ScenarioStep::CreateDir { path } => {
                     out.push_str(&format!("Ensure the directory `{}/` exists.\n\n", path));
                 }
-                ScenarioStep::RunRulesCheck { yaml_content } => {
-                    out.push_str("Rules file:\n\n");
+                ScenarioStep::RunAuditRun { yaml_content } => {
+                    out.push_str("Audit file:\n\n");
                     out.push_str("```yaml\n");
                     out.push_str(yaml_content);
                     if !yaml_content.ends_with('\n') {
                         out.push('\n');
                     }
                     out.push_str("```\n\n");
-                    out.push_str("```\n$ key rules check rules.yaml\n```\n\n");
+                    out.push_str("```\n$ key audit run --file audit.yaml\n```\n\n");
                 }
-                ScenarioStep::RunRulesTest {
+                ScenarioStep::RunAuditTest {
                     yaml_content,
                     expect_failure_messages,
                     expect_num_failures,
                 } => {
-                    out.push_str("Rules file:\n\n");
+                    out.push_str("Audit file:\n\n");
                     out.push_str("```yaml\n");
                     out.push_str(yaml_content);
                     if !yaml_content.ends_with('\n') {
@@ -54,7 +54,7 @@ pub fn render_guide() -> String {
                     }
                     out.push_str("```\n\n");
 
-                    let mut cmd = "$ key rules test rules.yaml ~/fake-home".to_string();
+                    let mut cmd = "$ key audit test audit.yaml ~/fake-home".to_string();
                     for msg in expect_failure_messages {
                         cmd.push_str(&format!(" --expect-failure-message {:?}", msg));
                     }
@@ -62,6 +62,33 @@ pub fn render_guide() -> String {
                         cmd.push_str(&format!(" --expect-failures {}", n));
                     }
                     out.push_str(&format!("```\n{}\n```\n\n", cmd));
+                }
+                ScenarioStep::RunAuditProjectNew { name, .. } => {
+                    out.push_str(&format!("```\n$ key audit project new {}\n```\n\n", name));
+                }
+                ScenarioStep::RunAuditProjectTest { .. } => {
+                    out.push_str("```\n$ key audit project test\n```\n\n");
+                }
+                ScenarioStep::RunAuditProjectBuild { .. } => {
+                    out.push_str("```\n$ key audit project build\n```\n\n");
+                }
+                ScenarioStep::RunAuditProjectClean { .. } => {
+                    out.push_str("```\n$ key audit project clean\n```\n\n");
+                }
+                ScenarioStep::RunAuditProjectRun { .. } => {
+                    out.push_str("```\n$ key audit project run\n```\n\n");
+                }
+                ScenarioStep::RunAuditInstall { config_name, .. } => {
+                    out.push_str(&format!(
+                        "```\n$ key audit install {}\n```\n\n",
+                        config_name
+                    ));
+                }
+                ScenarioStep::AssertFileExists { path } => {
+                    out.push_str(&format!("Assert file exists: `{}`\n\n", path));
+                }
+                ScenarioStep::AssertDirMissing { path } => {
+                    out.push_str(&format!("Assert directory does not exist: `{}`\n\n", path));
                 }
                 ScenarioStep::ExpectSuccess => {
                     out.push_str("Expected: all checks pass.\n\n");
@@ -119,6 +146,10 @@ fn quick_reference() -> String {
             F::TextMatchesRegex("^import .*".into()),
         ),
         (
+            "Literal substring match (no regex escaping needed)",
+            F::TextContains("artifactory.mycompany.com".into()),
+        ),
+        (
             "Line count bounds (both optional, inclusive)",
             F::TextHasLines {
                 min: Some(1),
@@ -135,7 +166,7 @@ fn quick_reference() -> String {
             F::ShellAddsToPath("JAVA_HOME_BIN".into()),
         ),
         (
-            "Java .properties: key=...",
+            "Properties / ini-style config: key=...",
             F::PropertiesDefinesKey("signing.keyId".into()),
         ),
         (
@@ -172,6 +203,17 @@ fn quick_reference() -> String {
                     F::ShellExports("JAVA_HOME".into()),
                     F::ShellDefinesVariable("JAVA_HOME".into()),
                 ],
+            },
+        ),
+        (
+            "Negation (passes when inner check fails)",
+            F::Not(Box::new(F::TextMatchesRegex("(?i)password".into()))),
+        ),
+        (
+            "Conditional (if condition holds, then check must hold)",
+            F::Conditionally {
+                condition: Box::new(F::FileExists),
+                then: Box::new(F::TextMatchesRegex("^registry=".into())),
             },
         ),
     ];
@@ -224,10 +266,35 @@ fn quick_reference() -> String {
                 },
             ]),
         ),
+        (
+            "Negation (passes when inner rule fails)",
+            P::Not(Box::new(P::FileSatisfies {
+                path: sp("~/.ssh/id_dsa.pub"),
+                check: F::FileExists,
+            })),
+        ),
+        (
+            "Conditional (if condition holds, then rule must hold)",
+            P::Conditionally {
+                condition: Box::new(P::FileSatisfies {
+                    path: sp("~/.npmrc"),
+                    check: F::FileExists,
+                }),
+                then: Box::new(P::FileSatisfies {
+                    path: sp("~/.npmrc"),
+                    check: F::TextMatchesRegex("^registry=".into()),
+                }),
+            },
+        ),
     ];
 
     let mut out = String::new();
     out.push_str("## Quick Reference\n\n");
+
+    out.push_str("### Control file format\n\n");
+    out.push_str("An audit file is a YAML mapping with a `controls` list. Each control has:\n\n");
+    out.push_str("```yaml\ncontrols:\n  - id: SSH-KEY-EXISTS\n    title: SSH key is present\n    description: Checks that an SSH key exists\n    remediation: Run ssh-keygen to create a key\n    check:\n      file:\n        path: ~/.ssh/id_ed25519.pub\n        check: file-exists\n```\n\n");
+    out.push_str("The `id` must match `[A-Z][A-Z0-9-]*` and be unique within the file.\n\n");
 
     out.push_str("### Predicates (used inside `check:`)\n\n");
     for (description, pred) in &predicate_examples {
@@ -237,13 +304,22 @@ fn quick_reference() -> String {
         out.push_str("```\n\n");
     }
 
-    out.push_str("### Propositions (top-level rules)\n\n");
+    out.push_str("### Propositions (used in control `check:`)\n\n");
     for (description, prop) in &proposition_examples {
         out.push_str(&format!("{}:\n\n", description));
         out.push_str("```yaml\n");
         out.push_str(&prop_yaml(prop));
         out.push_str("```\n\n");
     }
+
+    out.push_str("### tests.yaml format (for audit projects)\n\n");
+    out.push_str(
+        "A test file defines suites of test cases that verify controls against fixtures:\n\n",
+    );
+    out.push_str("```yaml\ntest-suites:\n  - name: \"SSH key checks\"\n    description: \"Verify SSH key existence controls\"\n    tests:\n      - control-id: CTRL-0001\n        description: \"valid SSH key setup passes\"\n        fixture: CTRL-0001-valid\n        expect: pass\n\n      - control-id: CTRL-0001\n        description: \"missing SSH key detected\"\n        fixture: CTRL-0001-invalid\n        expect:\n          fail:\n            count: 1\n            messages:\n              - \"does not exist\"\n```\n\n");
+    out.push_str("- `expect: pass` — control must pass on this fixture\n");
+    out.push_str("- `expect: fail` — control must fail (any failure)\n");
+    out.push_str("- `expect: { fail: { count: N, messages: [...] } }` — detailed expectations (both optional)\n\n");
 
     out
 }
@@ -255,7 +331,7 @@ mod tests {
     #[test]
     fn guide_renders_without_panic() {
         let guide = render_guide();
-        assert!(guide.contains("# key rules"));
+        assert!(guide.contains("# key audit"));
         assert!(guide.contains("Quick Reference"));
         // Ensure all scenarios are represented
         for scenario in all_scenarios() {

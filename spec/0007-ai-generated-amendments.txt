@@ -1,0 +1,8 @@
+Amendments to spec 0007, agreed upon before implementation:
+
+1. `key audit run --file <f>` instead of bare `key audit <f>` — avoids clap subcommand/positional ambiguity.
+2. `key audit delete --file <f> [--id <ID>]` — named flags, not positional.
+3. Evaluation keeps `Result<(), Vec<RuleFailure>>` internally (useful for diagnostics in test command),
+   but accepts that Not/Conditionally may produce less-detailed failure messages.
+4. Bare `key audit` (installed config picker) deferred to phase 4.
+5. Audit projects deferred to phase 5.

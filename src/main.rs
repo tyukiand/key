@@ -10,7 +10,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
 
-use cli::{Cli, Command, UserCommand};
+use cli::{AuditCommand, Cli, Command, UserCommand};
 use effects::{Effects, RealEffects};
 use mutation::MutationToken;
 
@@ -25,13 +25,19 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let fx = RealEffects;
 
-    // Rules commands don't need SSH or key state
-    if let Command::Rules(ref rules_cmd) = cli.command {
+    // Audit commands don't need SSH or key state
+    if let Command::Audit { ref command } = cli.command {
         let home = match cli.test_only_home_dir {
             Some(ref h) => PathBuf::from(h),
             None => PathBuf::from(fx.home_dir()?),
         };
-        return commands::rules::dispatch(rules_cmd, &home, &fx);
+        return match command {
+            None => commands::audit::dispatch_pick(&home, &fx),
+            Some(AuditCommand::Project(ref proj_cmd)) => {
+                commands::audit::dispatch_project(proj_cmd, &home, &fx)
+            }
+            Some(ref cmd) => commands::audit::dispatch(cmd, &home, &fx),
+        };
     }
 
     // Check prerequisites
@@ -97,7 +103,7 @@ fn run() -> Result<()> {
             commands::setup::setup(&fx)?;
         }
 
-        Command::Rules(_) => unreachable!("handled above"),
+        Command::Audit { .. } => unreachable!("handled above"),
     }
 
     Ok(())

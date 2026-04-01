@@ -1,0 +1,67 @@
+A remark.
+
+The tool itself runs "tests" on configuration files (controls encoded in yaml). (Inception-Level-0) The controls are written in control-proposition-predicate-yaml.
+
+Then there are `key audit project test` tests that test the controls. Let's call them audit-project-tests, as one
+fixed phrase instead of referring vaguely to "tests". (Inception-Level-1). Those are also written in yaml as surface syntax, but in a separate ASTs, let's call it TestAst.
+
+Then we have to write tests in Rust that test all the levels below (Inception-Level-2). Let's refer to those as rust-tests to disambiguate.
+
+So:
+
+  * controls test the files
+  * audit-project-tests test the controls
+  * rust-tests test the audit-project-test mechanism
+
+It is crucial to distinguish what "failures" and "errors" and "successes" we are talking about when.
+
+A "success" reported by a control on a file that should be detected as misconfigured is a False Negative,
+i.e. a failure to define a good control, and such a failure should be detected by a properly designed test at audit-project-tests level (but that's user's responsibility, not this tool's responsibility).
+
+A "success" reported by an the audit-project-test on a user-provided test fixture that should have detected a misconfiguration is a failure: if a well-constructed audit-project-test from level-1 catches a bug in a level-0 control, then the correct behavior of the `key audit project test` is to create a nice error message explaining what kind of problem was caught by the level-1 test. The good understandable error message is part of the `key audit project test`s functionality.
+
+The point is that once one sees "a failure" somewhere, one should not randomly jump e.g. from level-0 "failures" trying to fix them through hacks at level-2, e.g. sabotaging error messages at level-1. One should first have a clear picture whether "the failure" is something that brook in our tool, or whether it's something that broke in auditor's 'key audit project test', or whether it's something that broke in end-user's audited file system, or whether it's actually something that broke in our tests.
+
+On the level of rust, one should be able to systematically define mini-scenarios for every possible combination at every level (which does not mean that we really need every single boolean combination, but we should be in a state where every statement of the correctness is _challengeable_ (as opposed to being effectively untestable))
+
+  - Always describe the scenario, i.e. what it means for a spherical configuration in vacuum to be "correct"
+    in the current context ("objectively good configuration")
+  - According to this objectively good configuration criterion, a directory or file `f` can be valid or invalid:
+
+      fake home directory valid according to ideal
+      fake home directory invalid according to ideal
+
+  - A given control `c` on a given directory/file `f` can pass (quiet) or fail (complain), which gives us total of 4 combinations on this level
+
+      valid-quiet: TN,
+      invalid-quiet: FN,
+      valid-complains: FP,
+      invalid-complains: TP
+
+    again, the auditor using the tool is free to define all kinds of dumb controls, that's not necessarily our problem,
+    and we definitely should not introduce any hacks at higher level trying to "guess" what "the right" thing would
+    have been in an auditor-defined control.
+
+  - The auditor-dev that creates the project with the test fixtures can have multiple ways to assert that
+    a chosen control `c` on a fixture `f` should have some expected behavior `e` (such as: should produce errors,
+    should produce no errors, should produce errors with error messages etc.).
+
+    So, in total, clustering the various "expected error reporting  modes" , we have eight combinations:
+
+      valid-quiet-assertControlQuiet  = valid fixture, control quiet, test expects that the control passes
+      valid-quiet-assertControlComplains  = valid fixture, control quiet, test expects some reports though (auditor defined test is silly, it asserts that there are complaints about valid example fixtures) [valid-...-assertControlComplains = uninteresting case]
+      valid-complains-assertControlQuiet = tests detected a control that produces FPs, tests should fail with good actionable error message
+      valid-complains-assertControlComplains = valid fixture, stupid control, stupid assertion, auditor's fault [uninteresting]
+
+      ... and so on.
+
+      Eliminating the "obviously stupid" test cases where the assertions in the tests disagree with the ideal truth,
+      we are essentially back to four interesting cases:
+
+      valid-quiet-assertQuiet          - all good as expected, nice
+      valid-complains-assertQuiet      - test detected an FP in the controller, our tool should produce nice actionable messages in the test results
+      invalid-quiet-assertComplains    - test detected an FN in the controller, our tool should produce nice actionable mesages in the test results
+      invalid-complains-assertComprains - control successfully reports misconfig as expected, nice
+
+      These are the scenarios we should be able to represent in our rust tests.
+

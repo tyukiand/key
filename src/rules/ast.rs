@@ -71,6 +71,7 @@ impl std::fmt::Display for SimplePath {
 pub enum FilePredicateAst {
     FileExists,
     TextMatchesRegex(String),
+    TextContains(String),
     TextHasLines {
         min: Option<u32>,
         max: Option<u32>,
@@ -87,6 +88,11 @@ pub enum FilePredicateAst {
         hint: String,
         checks: Vec<FilePredicateAst>,
     },
+    Not(Box<FilePredicateAst>),
+    Conditionally {
+        condition: Box<FilePredicateAst>,
+        then: Box<FilePredicateAst>,
+    },
 }
 
 #[cfg(test)]
@@ -95,6 +101,7 @@ impl FilePredicateAst {
         match self {
             FilePredicateAst::FileExists => "file-exists",
             FilePredicateAst::TextMatchesRegex(_) => "text-matches",
+            FilePredicateAst::TextContains(_) => "text-contains",
             FilePredicateAst::TextHasLines { .. } => "text-has-lines",
             FilePredicateAst::ShellExports(_) => "shell-exports",
             FilePredicateAst::ShellDefinesVariable(_) => "shell-defines",
@@ -105,6 +112,8 @@ impl FilePredicateAst {
             FilePredicateAst::YamlMatches(_) => "yaml-matches",
             FilePredicateAst::All(_) => "all",
             FilePredicateAst::Any { .. } => "any",
+            FilePredicateAst::Not(_) => "not",
+            FilePredicateAst::Conditionally { .. } => "conditionally",
         }
     }
 }
@@ -125,6 +134,11 @@ pub enum Proposition {
     },
     All(Vec<Proposition>),
     Any(Vec<Proposition>),
+    Not(Box<Proposition>),
+    Conditionally {
+        condition: Box<Proposition>,
+        then: Box<Proposition>,
+    },
 }
 
 #[cfg(test)]
@@ -136,8 +150,85 @@ impl Proposition {
             Proposition::Exists { .. } => "exists",
             Proposition::All(_) => "all",
             Proposition::Any(_) => "any",
+            Proposition::Not(_) => "not",
+            Proposition::Conditionally { .. } => "conditionally",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Control {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub remediation: String,
+    pub check: Proposition,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ControlFile {
+    pub controls: Vec<Control>,
+}
+
+/// Validate a control ID: must match `[A-Z][A-Z0-9-]*`.
+pub fn validate_control_id(s: &str) -> Result<()> {
+    if s.is_empty() {
+        bail!("Control ID must not be empty");
+    }
+    let mut chars = s.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_uppercase() {
+        bail!(
+            "Control ID must start with an uppercase letter [A-Z], got {:?}",
+            s
+        );
+    }
+    for c in chars {
+        if !c.is_ascii_uppercase() && !c.is_ascii_digit() && c != '-' {
+            bail!(
+                "Control ID must contain only [A-Z0-9-], got invalid character {:?} in {:?}",
+                c,
+                s
+            );
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// TestAst — for `key audit project test` (tests.yaml)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestFile {
+    pub test_suites: Vec<TestSuite>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestSuite {
+    pub name: String,
+    pub description: Option<String>,
+    pub tests: Vec<TestCase>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestCase {
+    pub control_id: String,
+    pub description: String,
+    pub fixture: String,
+    pub expect: TestExpectation,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestExpectation {
+    Pass,
+    Fail(FailExpectation),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FailExpectation {
+    pub count: Option<usize>,
+    pub messages: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +247,7 @@ impl std::fmt::Display for RuleFailure {
 pub const PREDICATE_YAML_KEYS: &[&str] = &[
     "file-exists",
     "text-matches",
+    "text-contains",
     "text-has-lines",
     "shell-exports",
     "shell-defines",
@@ -166,16 +258,27 @@ pub const PREDICATE_YAML_KEYS: &[&str] = &[
     "yaml-matches",
     "all",
     "any",
+    "not",
+    "conditionally",
 ];
 
 #[cfg(test)]
-pub const PROPOSITION_YAML_KEYS: &[&str] = &["file", "forall", "exists", "all", "any"];
+pub const PROPOSITION_YAML_KEYS: &[&str] = &[
+    "file",
+    "forall",
+    "exists",
+    "all",
+    "any",
+    "not",
+    "conditionally",
+];
 
 #[cfg(test)]
 pub fn all_predicate_variants() -> Vec<FilePredicateAst> {
     vec![
         FilePredicateAst::FileExists,
         FilePredicateAst::TextMatchesRegex("^test.*".into()),
+        FilePredicateAst::TextContains("needle".into()),
         FilePredicateAst::TextHasLines {
             min: Some(1),
             max: Some(100),
@@ -197,6 +300,11 @@ pub fn all_predicate_variants() -> Vec<FilePredicateAst> {
         FilePredicateAst::Any {
             hint: "try this".into(),
             checks: vec![FilePredicateAst::FileExists],
+        },
+        FilePredicateAst::Not(Box::new(FilePredicateAst::FileExists)),
+        FilePredicateAst::Conditionally {
+            condition: Box::new(FilePredicateAst::FileExists),
+            then: Box::new(FilePredicateAst::TextMatchesRegex("^test.*".into())),
         },
     ]
 }
@@ -250,5 +358,33 @@ pub fn all_proposition_variants() -> Vec<Proposition> {
             path: SimplePath::new("~/test").unwrap(),
             check: FilePredicateAst::FileExists,
         }]),
+        Proposition::Not(Box::new(Proposition::FileSatisfies {
+            path: SimplePath::new("~/test").unwrap(),
+            check: FilePredicateAst::FileExists,
+        })),
+        Proposition::Conditionally {
+            condition: Box::new(Proposition::FileSatisfies {
+                path: SimplePath::new("~/test").unwrap(),
+                check: FilePredicateAst::FileExists,
+            }),
+            then: Box::new(Proposition::FileSatisfies {
+                path: SimplePath::new("~/test").unwrap(),
+                check: FilePredicateAst::TextMatchesRegex("^hello".into()),
+            }),
+        },
+    ]
+}
+
+#[cfg(test)]
+pub const TEST_EXPECTATION_YAML_KEYS: &[&str] = &["pass", "fail"];
+
+#[cfg(test)]
+pub fn all_test_expectation_variants() -> Vec<TestExpectation> {
+    vec![
+        TestExpectation::Pass,
+        TestExpectation::Fail(FailExpectation {
+            count: Some(2),
+            messages: vec!["does not exist".into()],
+        }),
     ]
 }

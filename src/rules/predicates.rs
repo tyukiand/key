@@ -21,6 +21,7 @@ pub fn desugar(pred: &FilePredicateAst) -> Option<FilePredicateAst> {
         }
         FilePredicateAst::FileExists => None,
         FilePredicateAst::TextMatchesRegex(_) => None,
+        FilePredicateAst::TextContains(_) => None,
         FilePredicateAst::TextHasLines { .. } => None,
         FilePredicateAst::PropertiesDefinesKey(_) => None,
         FilePredicateAst::XmlMatchesPath(_) => None,
@@ -28,6 +29,8 @@ pub fn desugar(pred: &FilePredicateAst) -> Option<FilePredicateAst> {
         FilePredicateAst::YamlMatches(_) => None,
         FilePredicateAst::All(_) => None,
         FilePredicateAst::Any { .. } => None,
+        FilePredicateAst::Not(_) => None,
+        FilePredicateAst::Conditionally { .. } => None,
     }
 }
 
@@ -59,6 +62,19 @@ pub fn evaluate_predicate(pred: &FilePredicateAst, file_path: &Path) -> Result<(
             Err(format!(
                 "no line matches regex {:?} in {}",
                 pattern,
+                file_path.display()
+            ))
+        }
+        FilePredicateAst::TextContains(needle) => {
+            let content = read_file_text(file_path)?;
+            for line in content.lines() {
+                if line.contains(needle.as_str()) {
+                    return Ok(());
+                }
+            }
+            Err(format!(
+                "no line contains {:?} in {}",
+                needle,
                 file_path.display()
             ))
         }
@@ -143,6 +159,19 @@ pub fn evaluate_predicate(pred: &FilePredicateAst, file_path: &Path) -> Result<(
                 hint,
                 errors.join("; ")
             ))
+        }
+        FilePredicateAst::Not(inner) => match evaluate_predicate(inner, file_path) {
+            Ok(()) => Err(format!(
+                "expected check to fail but it passed in {}",
+                file_path.display()
+            )),
+            Err(_) => Ok(()),
+        },
+        FilePredicateAst::Conditionally { condition, then } => {
+            match evaluate_predicate(condition, file_path) {
+                Err(_) => Ok(()), // condition not met → vacuously true
+                Ok(()) => evaluate_predicate(then, file_path),
+            }
         }
         // Desugaring variants are handled above via desugar()
         FilePredicateAst::ShellExports(_)

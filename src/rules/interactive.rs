@@ -1,7 +1,9 @@
 use anyhow::{bail, Result};
 
 use crate::effects::Effects;
-use crate::rules::ast::{DataArrayCheck, DataSchema, FilePredicateAst, Proposition, SimplePath};
+use crate::rules::ast::{
+    Control, DataArrayCheck, DataSchema, FilePredicateAst, Proposition, SimplePath,
+};
 
 /// Response from an answerer to a question.
 pub enum Answer {
@@ -302,17 +304,18 @@ pub fn build_data_schema(answerer: &mut impl Answerer) -> Result<BuildResult<Dat
             AskResult::GoBack => return Ok(BuildResult::GoBack),
         };
 
-        let result = match idx {
-            0 => DataSchema::Anything,
-            1 => DataSchema::IsString,
-            2 => match ask_string(answerer, "Regex pattern for string")? {
+        let tag = menu_tag(variants[idx]);
+        let result = match tag {
+            "anything" => DataSchema::Anything,
+            "is-string" => DataSchema::IsString,
+            "is-string-matching" => match ask_string(answerer, "Regex pattern for string")? {
                 AskResult::Answer(re) => DataSchema::IsStringMatching(re),
                 AskResult::GoBack => continue,
             },
-            3 => DataSchema::IsNumber,
-            4 => DataSchema::IsBool,
-            5 => DataSchema::IsNull,
-            6 => {
+            "is-number" => DataSchema::IsNumber,
+            "is-bool" => DataSchema::IsBool,
+            "is-null" => DataSchema::IsNull,
+            "is-object" => {
                 // is-object: collect key→schema pairs
                 let mut entries: Vec<(String, DataSchema)> = Vec::new();
                 loop {
@@ -345,7 +348,7 @@ pub fn build_data_schema(answerer: &mut impl Answerer) -> Result<BuildResult<Dat
                 }
                 DataSchema::IsObject(entries)
             }
-            7 => {
+            "is-array" => {
                 // is-array: ask for forall, exists, at constraints
                 let forall = match ask_yes_no(answerer, "Add forall constraint? (y/n)")? {
                     AskResult::Answer(true) => match build_data_schema(answerer)? {
@@ -416,13 +419,18 @@ pub fn build_predicate(answerer: &mut impl Answerer) -> Result<BuildResult<FileP
             AskResult::GoBack => return Ok(BuildResult::GoBack),
         };
 
-        let result = match idx {
-            0 => FilePredicateAst::FileExists,
-            1 => match ask_string(answerer, "Regex pattern")? {
+        let tag = menu_tag(variants[idx]);
+        let result = match tag {
+            "file-exists" => FilePredicateAst::FileExists,
+            "text-matches" => match ask_string(answerer, "Regex pattern")? {
                 AskResult::Answer(re) => FilePredicateAst::TextMatchesRegex(re),
                 AskResult::GoBack => continue,
             },
-            2 => {
+            "text-contains" => match ask_string(answerer, "Literal substring to find")? {
+                AskResult::Answer(s) => FilePredicateAst::TextContains(s),
+                AskResult::GoBack => continue,
+            },
+            "text-has-lines" => {
                 let min_s = match ask_string(answerer, "Min lines (or 'none')")? {
                     AskResult::Answer(s) => s,
                     AskResult::GoBack => continue,
@@ -443,35 +451,37 @@ pub fn build_predicate(answerer: &mut impl Answerer) -> Result<BuildResult<FileP
                 };
                 FilePredicateAst::TextHasLines { min, max }
             }
-            3 => match ask_string(answerer, "Variable name")? {
+            "shell-exports" => match ask_string(answerer, "Variable name")? {
                 AskResult::Answer(var) => FilePredicateAst::ShellExports(var),
                 AskResult::GoBack => continue,
             },
-            4 => match ask_string(answerer, "Variable name")? {
+            "shell-defines" => match ask_string(answerer, "Variable name")? {
                 AskResult::Answer(var) => FilePredicateAst::ShellDefinesVariable(var),
                 AskResult::GoBack => continue,
             },
-            5 => match ask_string(answerer, "Variable name")? {
+            "shell-adds-to-path" => match ask_string(answerer, "Variable name")? {
                 AskResult::Answer(var) => FilePredicateAst::ShellAddsToPath(var),
                 AskResult::GoBack => continue,
             },
-            6 => match ask_string(answerer, "Property key")? {
+            "properties-defines-key" => match ask_string(answerer, "Property key")? {
                 AskResult::Answer(key) => FilePredicateAst::PropertiesDefinesKey(key),
                 AskResult::GoBack => continue,
             },
-            7 => match ask_string(answerer, "XML element path (e.g. settings/servers/server)")? {
-                AskResult::Answer(path) => FilePredicateAst::XmlMatchesPath(path),
-                AskResult::GoBack => continue,
-            },
-            8 => match build_data_schema(answerer)? {
+            "xml-matches" => {
+                match ask_string(answerer, "XML element path (e.g. settings/servers/server)")? {
+                    AskResult::Answer(path) => FilePredicateAst::XmlMatchesPath(path),
+                    AskResult::GoBack => continue,
+                }
+            }
+            "json-matches" => match build_data_schema(answerer)? {
                 BuildResult::Built(schema) => FilePredicateAst::JsonMatches(schema),
                 BuildResult::GoBack => continue,
             },
-            9 => match build_data_schema(answerer)? {
+            "yaml-matches" => match build_data_schema(answerer)? {
                 BuildResult::Built(schema) => FilePredicateAst::YamlMatches(schema),
                 BuildResult::GoBack => continue,
             },
-            10 => {
+            "all" => {
                 let preds = collect_items(
                     answerer,
                     &mut |a| build_predicate_dyn(a),
@@ -482,7 +492,7 @@ pub fn build_predicate(answerer: &mut impl Answerer) -> Result<BuildResult<FileP
                 }
                 FilePredicateAst::All(preds)
             }
-            11 => {
+            "any" => {
                 let hint = match ask_string(answerer, "Hint for user when all alternatives fail")? {
                     AskResult::Answer(h) => h,
                     AskResult::GoBack => continue,
@@ -496,6 +506,27 @@ pub fn build_predicate(answerer: &mut impl Answerer) -> Result<BuildResult<FileP
                     continue;
                 }
                 FilePredicateAst::Any { hint, checks }
+            }
+            "not" => {
+                let inner = match build_predicate(answerer)? {
+                    BuildResult::Built(p) => p,
+                    BuildResult::GoBack => continue,
+                };
+                FilePredicateAst::Not(Box::new(inner))
+            }
+            "conditionally" => {
+                let condition = match build_predicate(answerer)? {
+                    BuildResult::Built(p) => p,
+                    BuildResult::GoBack => continue,
+                };
+                let then = match build_predicate(answerer)? {
+                    BuildResult::Built(p) => p,
+                    BuildResult::GoBack => continue,
+                };
+                FilePredicateAst::Conditionally {
+                    condition: Box::new(condition),
+                    then: Box::new(then),
+                }
             }
             _ => bail!("Invalid selection"),
         };
@@ -540,8 +571,9 @@ pub fn build_proposition(answerer: &mut impl Answerer) -> Result<BuildResult<Pro
             AskResult::GoBack => return Ok(BuildResult::GoBack),
         };
 
-        let result = match idx {
-            0 => {
+        let tag = menu_tag(variants[idx]);
+        let result = match tag {
+            "file" => {
                 let path = match ask_path(answerer, "File path (~/...)")? {
                     AskResult::Answer(p) => p,
                     AskResult::GoBack => continue,
@@ -552,7 +584,7 @@ pub fn build_proposition(answerer: &mut impl Answerer) -> Result<BuildResult<Pro
                 };
                 Proposition::FileSatisfies { path, check }
             }
-            1 => {
+            "forall" => {
                 let files = match ask_path_list(answerer)? {
                     AskResult::Answer(f) => f,
                     AskResult::GoBack => continue,
@@ -563,7 +595,7 @@ pub fn build_proposition(answerer: &mut impl Answerer) -> Result<BuildResult<Pro
                 };
                 Proposition::Forall { files, check }
             }
-            2 => {
+            "exists" => {
                 let files = match ask_path_list(answerer)? {
                     AskResult::Answer(f) => f,
                     AskResult::GoBack => continue,
@@ -574,7 +606,7 @@ pub fn build_proposition(answerer: &mut impl Answerer) -> Result<BuildResult<Pro
                 };
                 Proposition::Exists { files, check }
             }
-            3 => {
+            "all" => {
                 let props = collect_items(
                     answerer,
                     &mut |a| build_proposition_dyn(a),
@@ -585,7 +617,7 @@ pub fn build_proposition(answerer: &mut impl Answerer) -> Result<BuildResult<Pro
                 }
                 Proposition::All(props)
             }
-            4 => {
+            "any" => {
                 let props = collect_items(
                     answerer,
                     &mut |a| build_proposition_dyn(a),
@@ -596,7 +628,28 @@ pub fn build_proposition(answerer: &mut impl Answerer) -> Result<BuildResult<Pro
                 }
                 Proposition::Any(props)
             }
-            _ => bail!("Invalid selection"),
+            "not" => {
+                let inner = match build_proposition(answerer)? {
+                    BuildResult::Built(p) => p,
+                    BuildResult::GoBack => continue,
+                };
+                Proposition::Not(Box::new(inner))
+            }
+            "conditionally" => {
+                let condition = match build_proposition(answerer)? {
+                    BuildResult::Built(p) => p,
+                    BuildResult::GoBack => continue,
+                };
+                let then = match build_proposition(answerer)? {
+                    BuildResult::Built(p) => p,
+                    BuildResult::GoBack => continue,
+                };
+                Proposition::Conditionally {
+                    condition: Box::new(condition),
+                    then: Box::new(then),
+                }
+            }
+            _ => bail!("Invalid selection: {:?}", tag),
         };
 
         return Ok(BuildResult::Built(result));
@@ -606,6 +659,23 @@ pub fn build_proposition(answerer: &mut impl Answerer) -> Result<BuildResult<Pro
 // ---------------------------------------------------------------------------
 // Menu items
 // ---------------------------------------------------------------------------
+
+/// Extract the leading tag from a menu item string.
+/// E.g. `"text-matches (regex)"` → `"text-matches"`.
+fn menu_tag(item: &str) -> &str {
+    item.split_whitespace().next().unwrap_or(item)
+}
+
+/// Find the 1-based menu index for a given tag in a menu list.
+/// Panics if the tag is not found (programming error).
+#[cfg(test)]
+fn menu_index_of(items: &[&str], tag: &str) -> String {
+    let idx = items
+        .iter()
+        .position(|item| menu_tag(item) == tag)
+        .unwrap_or_else(|| panic!("menu tag {:?} not found in menu items", tag));
+    (idx + 1).to_string()
+}
 
 fn data_schema_menu_items() -> Vec<&'static str> {
     vec![
@@ -628,16 +698,19 @@ fn predicate_menu_items() -> Vec<&'static str> {
     vec![
         "file-exists",
         "text-matches (regex)",
+        "text-contains (literal substring)",
         "text-has-lines (min/max)",
         "shell-exports (variable)",
         "shell-defines (variable)",
         "shell-adds-to-path (variable)",
-        "properties-defines-key",
+        "properties-defines-key (ini/properties key=value)",
         "xml-matches (element path)",
         "json-matches (data schema)",
         "yaml-matches (data schema)",
         "all (multiple checks)",
         "any (alternatives with hint)",
+        "not (negate)",
+        "conditionally (if-then)",
     ]
 }
 
@@ -649,19 +722,49 @@ fn proposition_menu_items() -> Vec<&'static str> {
         "exists (at least one file satisfies)",
         "all (multiple rules)",
         "any (any rule suffices)",
+        "not (negate)",
+        "conditionally (if-then)",
     ]
 }
 
-/// Entry point for the `key rules add` command.
-pub fn run_interactive_add(fx: &dyn Effects) -> Result<Proposition> {
+/// Entry point for the `key audit add` command.
+pub fn run_interactive_add_control(fx: &dyn Effects) -> Result<Control> {
     let mut answerer = EffectsAnswerer { fx };
     loop {
-        match build_proposition(&mut answerer)? {
-            BuildResult::Built(prop) => return Ok(prop),
-            BuildResult::GoBack => {
+        let id = match ask_string(&mut answerer, "Control ID (e.g. SSH-KEY-EXISTS)")? {
+            AskResult::Answer(s) => s,
+            AskResult::GoBack => {
                 fx.println("Already at top level, cannot go back further.");
+                continue;
             }
+        };
+        if let Err(e) = crate::rules::ast::validate_control_id(&id) {
+            fx.println(&format!("Invalid control ID: {}", e));
+            continue;
         }
+        let title = match ask_string(&mut answerer, "Title (short description)")? {
+            AskResult::Answer(s) => s,
+            AskResult::GoBack => continue,
+        };
+        let description = match ask_string(&mut answerer, "Description (what is checked)")? {
+            AskResult::Answer(s) => s,
+            AskResult::GoBack => continue,
+        };
+        let remediation = match ask_string(&mut answerer, "Remediation (how to fix if it fails)")? {
+            AskResult::Answer(s) => s,
+            AskResult::GoBack => continue,
+        };
+        let check = match build_proposition(&mut answerer)? {
+            BuildResult::Built(p) => p,
+            BuildResult::GoBack => continue,
+        };
+        return Ok(Control {
+            id,
+            title,
+            description,
+            remediation,
+            check,
+        });
     }
 }
 
@@ -679,18 +782,20 @@ pub fn data_schema_to_answers(schema: &DataSchema) -> Vec<String> {
 
 #[cfg(test)]
 fn data_schema_to_answers_inner(schema: &DataSchema, answers: &mut Vec<String>) {
+    let items = data_schema_menu_items();
+    let mi = |tag: &str| menu_index_of(&items, tag);
     match schema {
-        DataSchema::Anything => answers.push("1".into()),
-        DataSchema::IsString => answers.push("2".into()),
+        DataSchema::Anything => answers.push(mi("anything")),
+        DataSchema::IsString => answers.push(mi("is-string")),
         DataSchema::IsStringMatching(re) => {
-            answers.push("3".into());
+            answers.push(mi("is-string-matching"));
             answers.push(re.clone());
         }
-        DataSchema::IsNumber => answers.push("4".into()),
-        DataSchema::IsBool => answers.push("5".into()),
-        DataSchema::IsNull => answers.push("6".into()),
+        DataSchema::IsNumber => answers.push(mi("is-number")),
+        DataSchema::IsBool => answers.push(mi("is-bool")),
+        DataSchema::IsNull => answers.push(mi("is-null")),
         DataSchema::IsObject(entries) => {
-            answers.push("7".into());
+            answers.push(mi("is-object"));
             for (i, (key, sub)) in entries.iter().enumerate() {
                 answers.push(key.clone());
                 data_schema_to_answers_inner(sub, answers);
@@ -702,7 +807,7 @@ fn data_schema_to_answers_inner(schema: &DataSchema, answers: &mut Vec<String>) 
             }
         }
         DataSchema::IsArray(check) => {
-            answers.push("8".into());
+            answers.push(mi("is-array"));
             // forall?
             if let Some(ref f) = check.forall {
                 answers.push("y".into());
@@ -746,49 +851,55 @@ pub fn predicate_to_answers(pred: &FilePredicateAst) -> Vec<String> {
 
 #[cfg(test)]
 fn predicate_to_answers_inner(pred: &FilePredicateAst, answers: &mut Vec<String>) {
+    let items = predicate_menu_items();
+    let mi = |tag: &str| menu_index_of(&items, tag);
     match pred {
         FilePredicateAst::FileExists => {
-            answers.push("1".into()); // menu index
+            answers.push(mi("file-exists"));
         }
         FilePredicateAst::TextMatchesRegex(re) => {
-            answers.push("2".into());
+            answers.push(mi("text-matches"));
             answers.push(re.clone());
         }
+        FilePredicateAst::TextContains(s) => {
+            answers.push(mi("text-contains"));
+            answers.push(s.clone());
+        }
         FilePredicateAst::TextHasLines { min, max } => {
-            answers.push("3".into());
+            answers.push(mi("text-has-lines"));
             answers.push(min.map(|n| n.to_string()).unwrap_or_else(|| "none".into()));
             answers.push(max.map(|n| n.to_string()).unwrap_or_else(|| "none".into()));
         }
         FilePredicateAst::ShellExports(var) => {
-            answers.push("4".into());
+            answers.push(mi("shell-exports"));
             answers.push(var.clone());
         }
         FilePredicateAst::ShellDefinesVariable(var) => {
-            answers.push("5".into());
+            answers.push(mi("shell-defines"));
             answers.push(var.clone());
         }
         FilePredicateAst::ShellAddsToPath(var) => {
-            answers.push("6".into());
+            answers.push(mi("shell-adds-to-path"));
             answers.push(var.clone());
         }
         FilePredicateAst::PropertiesDefinesKey(key) => {
-            answers.push("7".into());
+            answers.push(mi("properties-defines-key"));
             answers.push(key.clone());
         }
         FilePredicateAst::XmlMatchesPath(path) => {
-            answers.push("8".into());
+            answers.push(mi("xml-matches"));
             answers.push(path.clone());
         }
         FilePredicateAst::JsonMatches(schema) => {
-            answers.push("9".into());
+            answers.push(mi("json-matches"));
             data_schema_to_answers_inner(schema, answers);
         }
         FilePredicateAst::YamlMatches(schema) => {
-            answers.push("10".into());
+            answers.push(mi("yaml-matches"));
             data_schema_to_answers_inner(schema, answers);
         }
         FilePredicateAst::All(preds) => {
-            answers.push("11".into());
+            answers.push(mi("all"));
             for (i, p) in preds.iter().enumerate() {
                 predicate_to_answers_inner(p, answers);
                 if i < preds.len() - 1 {
@@ -799,7 +910,7 @@ fn predicate_to_answers_inner(pred: &FilePredicateAst, answers: &mut Vec<String>
             }
         }
         FilePredicateAst::Any { hint, checks } => {
-            answers.push("12".into());
+            answers.push(mi("any"));
             answers.push(hint.clone());
             for (i, c) in checks.iter().enumerate() {
                 predicate_to_answers_inner(c, answers);
@@ -809,6 +920,15 @@ fn predicate_to_answers_inner(pred: &FilePredicateAst, answers: &mut Vec<String>
                     answers.push("n".into());
                 }
             }
+        }
+        FilePredicateAst::Not(inner) => {
+            answers.push(mi("not"));
+            predicate_to_answers_inner(inner, answers);
+        }
+        FilePredicateAst::Conditionally { condition, then } => {
+            answers.push(mi("conditionally"));
+            predicate_to_answers_inner(condition, answers);
+            predicate_to_answers_inner(then, answers);
         }
     }
 }
@@ -823,14 +943,16 @@ pub fn proposition_to_answers(prop: &Proposition) -> Vec<String> {
 
 #[cfg(test)]
 fn proposition_to_answers_inner(prop: &Proposition, answers: &mut Vec<String>) {
+    let items = proposition_menu_items();
+    let mi = |tag: &str| menu_index_of(&items, tag);
     match prop {
         Proposition::FileSatisfies { path, check } => {
-            answers.push("1".into());
+            answers.push(mi("file"));
             answers.push(path.as_str().into());
             predicate_to_answers_inner(check, answers);
         }
         Proposition::Forall { files, check } => {
-            answers.push("2".into());
+            answers.push(mi("forall"));
             for (i, f) in files.iter().enumerate() {
                 answers.push(f.as_str().into());
                 if i < files.len() - 1 {
@@ -842,7 +964,7 @@ fn proposition_to_answers_inner(prop: &Proposition, answers: &mut Vec<String>) {
             predicate_to_answers_inner(check, answers);
         }
         Proposition::Exists { files, check } => {
-            answers.push("3".into());
+            answers.push(mi("exists"));
             for (i, f) in files.iter().enumerate() {
                 answers.push(f.as_str().into());
                 if i < files.len() - 1 {
@@ -854,7 +976,7 @@ fn proposition_to_answers_inner(prop: &Proposition, answers: &mut Vec<String>) {
             predicate_to_answers_inner(check, answers);
         }
         Proposition::All(props) => {
-            answers.push("4".into());
+            answers.push(mi("all"));
             for (i, p) in props.iter().enumerate() {
                 proposition_to_answers_inner(p, answers);
                 if i < props.len() - 1 {
@@ -865,7 +987,7 @@ fn proposition_to_answers_inner(prop: &Proposition, answers: &mut Vec<String>) {
             }
         }
         Proposition::Any(props) => {
-            answers.push("5".into());
+            answers.push(mi("any"));
             for (i, p) in props.iter().enumerate() {
                 proposition_to_answers_inner(p, answers);
                 if i < props.len() - 1 {
@@ -874,6 +996,15 @@ fn proposition_to_answers_inner(prop: &Proposition, answers: &mut Vec<String>) {
                     answers.push("n".into());
                 }
             }
+        }
+        Proposition::Not(inner) => {
+            answers.push(mi("not"));
+            proposition_to_answers_inner(inner, answers);
+        }
+        Proposition::Conditionally { condition, then } => {
+            answers.push(mi("conditionally"));
+            proposition_to_answers_inner(condition, answers);
+            proposition_to_answers_inner(then, answers);
         }
     }
 }

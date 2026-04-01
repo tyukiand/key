@@ -1,0 +1,64 @@
+## Spec 0007 Implementation — Continuation Notes
+
+### Status: Phases 1-3 COMPLETE, all tests passing
+
+All code changes for Phases 1-3 are done. Tests pass (164 total: 62+62+40).
+`cargo fmt --check` is clean. `cargo build --release` succeeds.
+
+### What was implemented
+
+**Phase 1: AST Extensions**
+- `Not` and `Conditionally` added to both `FilePredicateAst` and `Proposition`
+- Full support in parse/generate/evaluate/interactive/scenarios/guide
+
+**Phase 2: Controls + CLI Rename**
+- `Control` (id, title, description, remediation, check) and `ControlFile` structs in ast.rs
+- `parse_control_file` / `generate_control_file` in parse.rs / generate.rs
+- CLI: `Command::Rules` → `Command::Audit`, `RulesCommand` → `AuditCommand`
+- `src/commands/rules.rs` renamed to `src/commands/audit.rs`
+- All scenarios updated to use `controls: [...]` YAML format
+- `RunRulesCheck` → `RunAuditRun`, `RunRulesTest` → `RunAuditTest`
+- `run_interactive_add_control` added to interactive.rs
+- Guide updated to document `key audit` subcommands
+
+**Phase 3: list, delete, colored output**
+- `key audit list <f>` / `key audit list --short <f>`
+- `key audit delete --file <f> [--id <ID>]`
+- `run_audit` outputs colored [PASS]/[FAIL]/[WARN] with ANSI escapes
+- `--ignore` and `--warn-only` repeatable flags on `key audit run`
+
+### Files changed (from original codebase)
+- spec/0007-ai-generated-amendments.txt (NEW)
+- src/rules/ast.rs — Not/Conditionally variants, Control/ControlFile structs, validate_control_id
+- src/rules/parse.rs — Not/Conditionally parsing, parse_control/parse_control_file
+- src/rules/generate.rs — Not/Conditionally generation, generate_control/generate_control_file
+- src/rules/predicates.rs — Not/Conditionally evaluation
+- src/rules/evaluate.rs — Not/Conditionally proposition evaluation
+- src/rules/interactive.rs — Not/Conditionally menu items + builders, run_interactive_add_control
+- src/rules/scenario.rs — 2 new scenarios, all scenarios use control-file format, ScenarioStep renamed
+- src/rules/scenario_guide.rs — guide title/text updated, control format in quick reference
+- src/rules/scenario_integ.rs — CLI args updated (audit run --file, audit test)
+- src/rules/scenario_unit.rs — uses parse_control_file
+- src/cli.rs — AuditCommand replaces RulesCommand, with Run/New/Add/Guide/Test/List/Delete
+- src/main.rs — dispatch to commands::audit
+- src/commands/audit.rs (was rules.rs) — full rewrite for control-based audit
+- src/commands/mod.rs — pub mod audit replaces pub mod rules
+
+### What remains (NOT in scope for this PR)
+- Phase 4: `key audit install`, bare `key audit` picker
+- Phase 5: `key audit project new/test/build/clean/run`
+
+### How to verify
+```
+cargo fmt --check
+cargo test --features testing   # or ./test.sh in Docker
+cargo build --release
+```
+
+### Original plan transcript
+/Users/drew/.claude/projects/-Volumes-CaseSensitiveBaseAfps-Projects-key/83ad1613-9cc1-45a4-a3ae-be740c981ef2.jsonl
+
+### Next steps if continuing
+1. Version bump in Cargo.toml
+2. Commit
+3. Any polish / manual testing the user wants
