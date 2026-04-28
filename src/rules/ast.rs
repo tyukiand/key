@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Schema for validating JSON/YAML data structures.
@@ -33,37 +34,160 @@ pub struct DataArrayCheck {
     pub at: Vec<(u32, DataSchema)>,
 }
 
-/// A validated path that starts with `~/` and contains no `.`, `..`, or `//` segments.
+// ---------------------------------------------------------------------------
+// SimplePath — concrete or pseudo-file
+// (spec/0009 §1.1: pseudo-file identifiers `<env>` and `<executable:NAME>`)
+// ---------------------------------------------------------------------------
+
+/// A pseudo-file identifier (spec/0009 §1.1).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PseudoFile {
+    /// `<env>` — current shell-style environment (spec/0009 §2)
+    Env,
+    /// `<executable:NAME>` — introspected executable on PATH (spec/0009 §3)
+    Executable(String),
+}
+
+impl PseudoFile {
+    /// Render as the canonical `<...>` token.
+    pub fn as_token(&self) -> String {
+        match self {
+            PseudoFile::Env => "<env>".to_string(),
+            PseudoFile::Executable(name) => format!("<executable:{}>", name),
+        }
+    }
+}
+
+/// A validated path: either concrete `~/...` (no `.`, `..`, `//` segments)
+/// or a pseudo-file identifier `<...>` (spec/0009 §1.1).
+///
+/// Stores the original textual form so `as_str()` is cheap for either kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SimplePath(String);
+pub struct SimplePath {
+    raw: String,
+    kind: SimplePathKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SimplePathKind {
+    Concrete,
+    Pseudo(PseudoFile),
+}
 
 impl SimplePath {
     pub fn new(s: &str) -> Result<Self> {
-        if !s.starts_with("~/") && s != "~" {
-            bail!("SimplePath must start with '~/': got {:?}", s);
-        }
-        if s.contains("/./") || s.contains("/../") || s.contains("//") {
-            bail!("SimplePath must not contain /./ or /../ or //: got {:?}", s);
-        }
-        Ok(SimplePath(s.to_string()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn resolve(&self, home_dir: &Path) -> PathBuf {
-        if self.0 == "~" {
-            home_dir.to_path_buf()
+        if let Some(stripped) = s.strip_prefix('<') {
+            if !stripped.ends_with('>') {
+                bail!("pseudo-file identifier must end with '>': got {:?}", s);
+            }
+            let inner = &stripped[..stripped.len() - 1];
+            if inner.is_empty() {
+                bail!("pseudo-file identifier must not be empty: got {:?}", s);
+            }
+            let (keyword, arg) = match inner.find(':') {
+                Some(idx) => (&inner[..idx], Some(&inner[idx + 1..])),
+                None => (inner, None),
+            };
+            let pseudo = match (keyword, arg) {
+                ("env", None) => PseudoFile::Env,
+                ("env", Some(_)) => bail!(
+                    "unknown pseudo-file: {:?}. `<env:...>` forms are not yet defined; \
+                     only `<env>` is supported in this increment.",
+                    s
+                ),
+                ("executable", Some(name)) => {
+                    if name.is_empty() {
+                        bail!(
+                            "pseudo-file `<executable:NAME>` requires a non-empty NAME: got {:?}",
+                            s
+                        );
+                    }
+                    if name.starts_with('/') {
+                        bail!(
+                            "pseudo-file `<executable:NAME>` does not accept absolute paths; \
+                             NAME must be a bare command name (use a concrete path with \
+                             `is-executable` for absolute paths). got {:?}",
+                            s
+                        );
+                    }
+                    if !name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-'))
+                    {
+                        bail!(
+                            "pseudo-file `<executable:NAME>` requires NAME to match \
+                             [A-Za-z0-9_.+-]+; got {:?}",
+                            s
+                        );
+                    }
+                    PseudoFile::Executable(name.to_string())
+                }
+                ("executable", None) => bail!(
+                    "pseudo-file `<executable>` requires a NAME: use `<executable:NAME>`. \
+                     got {:?}",
+                    s
+                ),
+                _ => bail!(
+                    "unknown pseudo-file keyword: {:?} in {:?}. \
+                     Valid pseudo-files: `<env>`, `<executable:NAME>`.",
+                    keyword,
+                    s
+                ),
+            };
+            Ok(SimplePath {
+                raw: s.to_string(),
+                kind: SimplePathKind::Pseudo(pseudo),
+            })
+        } else if s == "~" || s.starts_with("~/") {
+            if s.contains("/./") || s.contains("/../") || s.contains("//") {
+                bail!("SimplePath must not contain /./ or /../ or //: got {:?}", s);
+            }
+            Ok(SimplePath {
+                raw: s.to_string(),
+                kind: SimplePathKind::Concrete,
+            })
         } else {
-            home_dir.join(&self.0[2..])
+            bail!(
+                "SimplePath must start with '~/' (concrete) or '<' (pseudo-file): got {:?}",
+                s
+            );
+        }
+    }
+
+    /// Render as the original textual form (`~/...` or `<...>`).
+    pub fn as_str(&self) -> &str {
+        &self.raw
+    }
+
+    #[allow(dead_code)]
+    pub fn is_pseudo(&self) -> bool {
+        matches!(self.kind, SimplePathKind::Pseudo(_))
+    }
+
+    pub fn pseudo(&self) -> Option<&PseudoFile> {
+        match &self.kind {
+            SimplePathKind::Pseudo(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Resolve a concrete simple-path to a real file path under the given home.
+    /// Panics if called on a pseudo-file (callers should branch on `is_pseudo`).
+    pub fn resolve(&self, home_dir: &Path) -> PathBuf {
+        match &self.kind {
+            SimplePathKind::Concrete if self.raw == "~" => home_dir.to_path_buf(),
+            SimplePathKind::Concrete => home_dir.join(&self.raw[2..]),
+            SimplePathKind::Pseudo(p) => panic!(
+                "SimplePath::resolve called on pseudo-file {:?}",
+                p.as_token()
+            ),
         }
     }
 }
 
 impl std::fmt::Display for SimplePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        f.write_str(&self.raw)
     }
 }
 
@@ -154,6 +278,52 @@ impl Proposition {
             Proposition::Conditionally { .. } => "conditionally",
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Pseudo-file snapshots (spec/0009 §3.2 ExecutableSnapshot, §2.5 env_override)
+// ---------------------------------------------------------------------------
+
+/// JSON snapshot of an introspected executable (spec/0009 §3.2).
+/// All fields are always present in the materialized JSON; missing data is
+/// encoded as `null` / `false`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutableSnapshot {
+    pub name: String,
+    pub found: bool,
+    pub executable: bool,
+    pub path: Option<String>,
+    pub command_full: Option<String>,
+    pub version_full: Option<String>,
+    pub version: Option<String>,
+}
+
+impl ExecutableSnapshot {
+    /// A `found=false` snapshot for a name not on PATH.
+    pub fn not_found(name: &str) -> Self {
+        ExecutableSnapshot {
+            name: name.to_string(),
+            found: false,
+            executable: false,
+            path: None,
+            command_full: None,
+            version_full: None,
+            version: None,
+        }
+    }
+}
+
+/// Test-fixture overrides for pseudo-file evaluation (spec/0009 §2.5, §3.8).
+///
+/// `env_override`: when `Some`, `<env>` materializes from this map exclusively
+/// (no `std::env::vars()` access). Override is total — keys absent are not set.
+///
+/// `executable_override`: when `Some`, `<executable:NAME>` lookups bypass PATH
+/// and subprocess entirely. Override is total — NAMEs absent ⇒ `found=false`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PseudoFileFixture {
+    pub env_override: Option<BTreeMap<String, String>>,
+    pub executable_override: Option<BTreeMap<String, ExecutableSnapshot>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -373,6 +543,98 @@ pub fn all_proposition_variants() -> Vec<Proposition> {
             }),
         },
     ]
+}
+
+// ---------------------------------------------------------------------------
+// Pseudo-file parser tests (spec/0009 §6.1)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod pseudo_path_tests {
+    use super::*;
+
+    #[test]
+    fn parse_env_pseudo() {
+        let p = SimplePath::new("<env>").unwrap();
+        assert!(p.is_pseudo());
+        assert_eq!(p.pseudo(), Some(&PseudoFile::Env));
+        assert_eq!(p.as_str(), "<env>");
+    }
+
+    #[test]
+    fn parse_executable_with_name() {
+        let p = SimplePath::new("<executable:docker>").unwrap();
+        assert!(p.is_pseudo());
+        assert!(matches!(p.pseudo(), Some(PseudoFile::Executable(n)) if n == "docker"));
+        assert_eq!(p.as_str(), "<executable:docker>");
+    }
+
+    #[test]
+    fn parse_executable_hyphen_name() {
+        let p = SimplePath::new("<executable:git-lfs>").unwrap();
+        assert!(matches!(p.pseudo(), Some(PseudoFile::Executable(n)) if n == "git-lfs"));
+    }
+
+    #[test]
+    fn parse_executable_weird_name_chars() {
+        let p = SimplePath::new("<executable:weird.name+1>").unwrap();
+        assert!(matches!(p.pseudo(), Some(PseudoFile::Executable(n)) if n == "weird.name+1"));
+    }
+
+    #[test]
+    fn reject_empty_pseudo() {
+        let err = SimplePath::new("<>").unwrap_err();
+        assert!(format!("{:#}", err).contains("empty"));
+    }
+
+    #[test]
+    fn reject_unterminated_pseudo() {
+        let err = SimplePath::new("<env").unwrap_err();
+        assert!(format!("{:#}", err).contains("'>'"));
+    }
+
+    #[test]
+    fn reject_env_with_arg() {
+        let err = SimplePath::new("<env:json>").unwrap_err();
+        assert!(format!("{:#}", err).contains("env"));
+    }
+
+    #[test]
+    fn reject_executable_no_name() {
+        let err = SimplePath::new("<executable:>").unwrap_err();
+        assert!(format!("{:#}", err).contains("non-empty"));
+    }
+
+    #[test]
+    fn reject_executable_space_in_name() {
+        let err = SimplePath::new("<executable:has space>").unwrap_err();
+        assert!(format!("{:#}", err).contains("[A-Za-z0-9_.+-]"));
+    }
+
+    #[test]
+    fn reject_executable_absolute_path() {
+        let err = SimplePath::new("<executable:/abs>").unwrap_err();
+        assert!(format!("{:#}", err).contains("absolute"));
+    }
+
+    #[test]
+    fn reject_unknown_pseudo_keyword() {
+        let err = SimplePath::new("<process-list>").unwrap_err();
+        assert!(format!("{:#}", err).contains("unknown pseudo-file keyword"));
+    }
+
+    #[test]
+    fn concrete_path_still_works() {
+        let p = SimplePath::new("~/.bashrc").unwrap();
+        assert!(!p.is_pseudo());
+        assert_eq!(p.as_str(), "~/.bashrc");
+    }
+
+    #[test]
+    fn reject_invalid_concrete() {
+        assert!(SimplePath::new("/etc/passwd").is_err());
+        assert!(SimplePath::new("~/.././x").is_err());
+    }
 }
 
 #[cfg(test)]

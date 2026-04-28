@@ -1,13 +1,24 @@
 use std::path::Path;
 
 use crate::rules::ast::{Proposition, RuleFailure};
-use crate::rules::predicates::evaluate_predicate;
+use crate::rules::predicates::{evaluate_predicate_subject, Subject};
+use crate::rules::pseudo::EvalContext;
 
-/// Evaluate a proposition against a home directory.
-/// Returns `Ok(())` if all checks pass, `Err(failures)` otherwise.
+/// Evaluate a proposition against a home directory (production entry point).
+/// Equivalent to evaluating with no pseudo-file overrides.
 pub fn evaluate(proposition: &Proposition, home_dir: &Path) -> Result<(), Vec<RuleFailure>> {
+    let ctx = EvalContext::new(home_dir.to_path_buf());
+    evaluate_with_ctx(proposition, &ctx)
+}
+
+/// Evaluate a proposition with an explicit `EvalContext` (test harness entry
+/// point — supports `env_override` / `executable_override` per spec §2.5, §3.8).
+pub fn evaluate_with_ctx(
+    proposition: &Proposition,
+    ctx: &EvalContext,
+) -> Result<(), Vec<RuleFailure>> {
     let mut failures = Vec::new();
-    eval_prop(proposition, home_dir, &mut failures);
+    eval_prop(proposition, ctx, &mut failures);
     if failures.is_empty() {
         Ok(())
     } else {
@@ -15,25 +26,49 @@ pub fn evaluate(proposition: &Proposition, home_dir: &Path) -> Result<(), Vec<Ru
     }
 }
 
-fn eval_prop(prop: &Proposition, home_dir: &Path, failures: &mut Vec<RuleFailure>) {
+fn eval_prop(prop: &Proposition, ctx: &EvalContext, failures: &mut Vec<RuleFailure>) {
     match prop {
         Proposition::FileSatisfies { path, check } => {
-            let resolved = path.resolve(home_dir);
-            if let Err(msg) = evaluate_predicate(check, &resolved) {
-                failures.push(RuleFailure {
-                    path: path.as_str().to_string(),
-                    message: msg,
-                });
+            if let Some(pseudo) = path.pseudo() {
+                let snap = ctx.resolve(pseudo);
+                let subject = Subject::Pseudo(pseudo, &snap);
+                if let Err(msg) = evaluate_predicate_subject(check, &subject) {
+                    failures.push(RuleFailure {
+                        path: path.as_str().to_string(),
+                        message: msg,
+                    });
+                }
+            } else {
+                let resolved = path.resolve(&ctx.home_dir);
+                let subject = Subject::Concrete(resolved);
+                if let Err(msg) = evaluate_predicate_subject(check, &subject) {
+                    failures.push(RuleFailure {
+                        path: path.as_str().to_string(),
+                        message: msg,
+                    });
+                }
             }
         }
         Proposition::Forall { files, check } => {
             for f in files {
-                let resolved = f.resolve(home_dir);
-                if let Err(msg) = evaluate_predicate(check, &resolved) {
-                    failures.push(RuleFailure {
-                        path: f.as_str().to_string(),
-                        message: msg,
-                    });
+                if let Some(pseudo) = f.pseudo() {
+                    let snap = ctx.resolve(pseudo);
+                    let subject = Subject::Pseudo(pseudo, &snap);
+                    if let Err(msg) = evaluate_predicate_subject(check, &subject) {
+                        failures.push(RuleFailure {
+                            path: f.as_str().to_string(),
+                            message: msg,
+                        });
+                    }
+                } else {
+                    let resolved = f.resolve(&ctx.home_dir);
+                    let subject = Subject::Concrete(resolved);
+                    if let Err(msg) = evaluate_predicate_subject(check, &subject) {
+                        failures.push(RuleFailure {
+                            path: f.as_str().to_string(),
+                            message: msg,
+                        });
+                    }
                 }
             }
         }
@@ -41,8 +76,16 @@ fn eval_prop(prop: &Proposition, home_dir: &Path, failures: &mut Vec<RuleFailure
             let mut any_ok = false;
             let mut errs = Vec::new();
             for f in files {
-                let resolved = f.resolve(home_dir);
-                match evaluate_predicate(check, &resolved) {
+                let result = if let Some(pseudo) = f.pseudo() {
+                    let snap = ctx.resolve(pseudo);
+                    let subject = Subject::Pseudo(pseudo, &snap);
+                    evaluate_predicate_subject(check, &subject)
+                } else {
+                    let resolved = f.resolve(&ctx.home_dir);
+                    let subject = Subject::Concrete(resolved);
+                    evaluate_predicate_subject(check, &subject)
+                };
+                match result {
                     Ok(()) => {
                         any_ok = true;
                         break;
@@ -58,45 +101,39 @@ fn eval_prop(prop: &Proposition, home_dir: &Path, failures: &mut Vec<RuleFailure
         }
         Proposition::All(props) => {
             for p in props {
-                eval_prop(p, home_dir, failures);
+                eval_prop(p, ctx, failures);
             }
         }
         Proposition::Any(props) => {
-            // Try each; if any succeeds, the whole thing passes
             let mut branch_failures: Vec<Vec<RuleFailure>> = Vec::new();
             for p in props {
                 let mut branch = Vec::new();
-                eval_prop(p, home_dir, &mut branch);
+                eval_prop(p, ctx, &mut branch);
                 if branch.is_empty() {
-                    return; // success
+                    return;
                 }
                 branch_failures.push(branch);
             }
-            // All branches failed — report all failures from all branches
             for branch in branch_failures {
                 failures.extend(branch);
             }
         }
         Proposition::Not(inner) => {
             let mut inner_failures = Vec::new();
-            eval_prop(inner, home_dir, &mut inner_failures);
+            eval_prop(inner, ctx, &mut inner_failures);
             if inner_failures.is_empty() {
-                // Inner succeeded → Not fails
                 failures.push(RuleFailure {
                     path: "(not)".to_string(),
                     message: "expected check to fail but it passed".to_string(),
                 });
             }
-            // Inner failed → Not succeeds (do nothing)
         }
         Proposition::Conditionally { condition, then } => {
             let mut cond_failures = Vec::new();
-            eval_prop(condition, home_dir, &mut cond_failures);
+            eval_prop(condition, ctx, &mut cond_failures);
             if cond_failures.is_empty() {
-                // Condition passed → evaluate then-branch
-                eval_prop(then, home_dir, failures);
+                eval_prop(then, ctx, failures);
             }
-            // Condition failed → vacuously true (do nothing)
         }
     }
 }
@@ -368,7 +405,6 @@ mod tests {
                 ],
             },
         };
-        // ShellDefinesVariable matches "JAVA_HOME=/usr" (no export needed)
         assert!(evaluate(&prop, home.path()).is_ok());
     }
 }

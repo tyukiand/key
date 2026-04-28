@@ -1,0 +1,4 @@
+#!/bin/sh
+# Shadow `git` to verify the custom-extractor path picks up the canonical
+# "git version X.Y.Z" output line.
+echo "git version 9.8.7"

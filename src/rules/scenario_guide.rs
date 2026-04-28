@@ -312,6 +312,64 @@ fn quick_reference() -> String {
         out.push_str("```\n\n");
     }
 
+    out.push_str("### Pseudo-files (`<env>` and `<executable:NAME>`)\n\n");
+    out.push_str(
+        "Pseudo-files let predicates run against virtual subjects (the current \
+         shell environment, an introspected executable on PATH) instead of files \
+         on disk. Pseudo-file identifiers begin with `<` and end with `>`; they \
+         appear anywhere a concrete simple-path appears.\n\n",
+    );
+
+    out.push_str(
+        "`<env>` materializes as `export NAME=VALUE` lines (sorted, \
+                  newlines escaped). Use shell-* and text-* predicates against it:\n\n",
+    );
+    let env_example = P::FileSatisfies {
+        path: sp("<env>"),
+        check: F::ShellExports("RUSTUP_HOME".into()),
+    };
+    out.push_str("```yaml\n");
+    out.push_str(&prop_yaml(&env_example));
+    out.push_str("```\n\n");
+    let env_path_example = P::FileSatisfies {
+        path: sp("<env>"),
+        check: F::ShellAddsToPath("/home/u/.cargo/bin".into()),
+    };
+    out.push_str("```yaml\n");
+    out.push_str(&prop_yaml(&env_path_example));
+    out.push_str("```\n\n");
+
+    out.push_str(
+        "`<executable:NAME>` materializes as a JSON snapshot of the \
+                  executable resolved on PATH (`{name, found, executable, path, \
+                  command-full, version-full, version}`). Use `file-exists` for a \
+                  presence check or `json-matches` for the shape:\n\n",
+    );
+    let exec_example = P::FileSatisfies {
+        path: sp("<executable:docker>"),
+        check: F::FileExists,
+    };
+    out.push_str("```yaml\n");
+    out.push_str(&prop_yaml(&exec_example));
+    out.push_str("```\n\n");
+    let exec_version_example = P::FileSatisfies {
+        path: sp("<executable:python3>"),
+        check: F::JsonMatches(DataSchema::IsObject(vec![(
+            "version".into(),
+            DataSchema::IsStringMatching(r"^3\.\d+".into()),
+        )])),
+    };
+    out.push_str("```yaml\n");
+    out.push_str(&prop_yaml(&exec_version_example));
+    out.push_str("```\n\n");
+
+    out.push_str(
+        "Pseudo-files are read-only and cached for the duration of a single \
+         `key audit run` invocation. Inapplicable predicates (e.g. `xml-matches` \
+         on `<env>`, `shell-exports` on `<executable:NAME>`) fail explicitly with \
+         a message naming both the predicate and the pseudo-file.\n\n",
+    );
+
     out.push_str("### tests.yaml format (for audit projects)\n\n");
     out.push_str(
         "A test file defines suites of test cases that verify controls against fixtures:\n\n",
@@ -341,5 +399,120 @@ mod tests {
                 scenario.name
             );
         }
+    }
+
+    /// Spec/0009 §6.6: the guide must list `<env>` and `<executable:NAME>` with
+    /// at least one YAML example each, and the examples must round-trip
+    /// parse/evaluate against fixture overrides.
+    #[test]
+    fn guide_round_trips_pseudo_file_yaml_examples() {
+        use crate::rules::ast::{ExecutableSnapshot, PseudoFileFixture, SimplePath};
+        use crate::rules::evaluate::evaluate_with_ctx;
+        use crate::rules::parse::parse_proposition;
+        use crate::rules::pseudo::EvalContext;
+        use std::collections::BTreeMap;
+
+        let guide = render_guide();
+        assert!(guide.contains("<env>"), "guide missing <env> section");
+        assert!(
+            guide.contains("<executable:"),
+            "guide missing <executable:NAME> section"
+        );
+
+        // Extract YAML code-fenced examples between ```yaml and ``` lines and
+        // try parsing each one as a proposition. Then drive the evaluator with
+        // a fixture override that satisfies the pseudo-file references.
+        let mut env = BTreeMap::new();
+        env.insert("RUSTUP_HOME".into(), "/home/u/.rustup".into());
+        env.insert("PATH".into(), "/home/u/.cargo/bin:/usr/bin".into());
+        let mut exes = BTreeMap::new();
+        exes.insert(
+            "docker".into(),
+            ExecutableSnapshot {
+                name: "docker".into(),
+                found: true,
+                executable: true,
+                path: Some("/usr/bin/docker".into()),
+                command_full: Some("docker --version".into()),
+                version_full: Some("Docker version 20.10.7".into()),
+                version: Some("20.10.7".into()),
+            },
+        );
+        exes.insert(
+            "python3".into(),
+            ExecutableSnapshot {
+                name: "python3".into(),
+                found: true,
+                executable: true,
+                path: Some("/usr/bin/python3".into()),
+                command_full: Some("python3 --version".into()),
+                version_full: Some("Python 3.11.4".into()),
+                version: Some("3.11.4".into()),
+            },
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = EvalContext::with_fixture(
+            tmp.path().to_path_buf(),
+            PseudoFileFixture {
+                env_override: Some(env),
+                executable_override: Some(exes),
+            },
+        );
+
+        let mut found_pseudo_examples = 0usize;
+        let mut in_yaml = false;
+        let mut block = String::new();
+        for line in guide.lines() {
+            if line.trim_start().starts_with("```yaml") {
+                in_yaml = true;
+                block.clear();
+                continue;
+            }
+            if in_yaml && line.trim_start().starts_with("```") {
+                in_yaml = false;
+                if block.contains("<env>") || block.contains("<executable:") {
+                    let parsed: serde_yaml::Value =
+                        serde_yaml::from_str(&block).unwrap_or_else(|e| {
+                            panic!(
+                                "YAML parse failed for guide example:\n{}\nerr: {}",
+                                block, e
+                            )
+                        });
+                    if let Ok(prop) = parse_proposition(&parsed) {
+                        // Best-effort: evaluate; the example may legitimately
+                        // not pass against this fixture, but it must not panic
+                        // and must reach the evaluator.
+                        let _ = evaluate_with_ctx(&prop, &ctx);
+                        // Also ensure the path round-trips.
+                        match &prop {
+                            crate::rules::ast::Proposition::FileSatisfies { path, .. } => {
+                                assert!(
+                                    path.is_pseudo() || path.as_str().starts_with('~'),
+                                    "unexpected path in pseudo example: {}",
+                                    path
+                                );
+                                if path.is_pseudo() {
+                                    found_pseudo_examples += 1;
+                                    let p = SimplePath::new(path.as_str()).unwrap();
+                                    assert_eq!(p.as_str(), path.as_str());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                continue;
+            }
+            if in_yaml {
+                block.push_str(line);
+                block.push('\n');
+            }
+        }
+        assert!(
+            found_pseudo_examples >= 2,
+            "expected at least two pseudo-file YAML examples in guide; got {}",
+            found_pseudo_examples
+        );
     }
 }

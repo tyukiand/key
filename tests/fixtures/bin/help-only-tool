@@ -1,0 +1,17 @@
+#!/bin/sh
+# Only --help produces any output; --version / -version / -V are silent.
+# This proves the §3.3(d) fallback loop reaches --help.
+# Note: the spec-mandated semver regex requires a word boundary BEFORE the
+# leading digit; tools that emit "vN.N.N" (no boundary between v and digit)
+# are intentionally handled by per-tool custom extractors. The fixture here
+# uses a space-separated form that the generic loop can capture.
+case "$1" in
+  --help)
+    echo "My Tool 9.9.9"
+    echo "  Usage: my-tool [options]"
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac

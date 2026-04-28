@@ -1,0 +1,581 @@
+Generalize "concrete files" to "concrete files + file-like structures",
+i.e. introduce **pseudo-files** so the existing FilePredicate vocabulary
+(TextMatches, ShellDefinesVariable, ShellExportsVariable, JsonMatches,
+…) can be reused against things that aren't on disk: the current
+process environment, and introspected executables.
+
+Two pseudo-files are introduced in this increment:
+
+  <env>                — the current shell-style environment
+  <executable:<name>>  — an executable on PATH, introspected
+
+The angle-bracket form is reserved going forward for pseudo-file
+identifiers; existing concrete simple-paths (`~/.bashrc`,
+`$HOME/.gradle/...`) are unaffected.
+
+================================================================
+1. Pseudo-files in the simple-path grammar
+================================================================
+
+1.1 A simple-path is now either:
+      a) a concrete simple-path as defined in 0005-rules.txt
+         (rooted at `~` / `$HOME`, no `/./`, no `/../`, no symlinks),
+         OR
+      b) a pseudo-file identifier of the form `<keyword>` or
+         `<keyword:arg>`. Pseudo-file identifiers begin with `<`
+         and end with `>`. The interior is one of a closed set of
+         names (this increment defines `env` and `executable:<name>`).
+
+1.2 Pseudo-files MAY appear anywhere a concrete file appears:
+      - as the `path:` of a `FileHasProperty`,
+      - as one element of the `files:` list of `Forall` / `Exists`,
+      - mixed with concrete files in the same list.
+
+1.3 Pseudo-files are read-only and have no on-disk representation.
+    Any predicate that semantically requires an on-disk path
+    (e.g. file size on the filesystem, mtime) MUST fail clearly with
+    "predicate <X> is not applicable to pseudo-file <Y>", rather
+    than silently returning false. The set of inapplicable
+    predicates is decided per pseudo-file and listed in §2.4 / §3.5.
+
+1.4 Pseudo-files are produced lazily and cached for the duration of
+    a single `key audit run` invocation. Two predicates referencing
+    the same pseudo-file in the same run see the same snapshot.
+    A new invocation gets a fresh snapshot (env may have changed,
+    PATH may resolve to a different binary, etc.).
+
+1.5 Pseudo-files are NOT writable by any control. They are inputs,
+    not artifacts.
+
+================================================================
+2. <env> — the current environment as a virtual file
+================================================================
+
+2.1 Materialization. `<env>` materializes as a virtual UTF-8 text
+    file whose body is one line per environment variable, in the
+    form
+
+        export NAME=VALUE
+
+    one line per `(name, value)` pair in `std::env::vars()`. The
+    order is sorted ASCII-ascending by name (deterministic across
+    runs and platforms).
+
+2.2 Quoting. VALUE is emitted verbatim. Newlines inside a value
+    are replaced with the literal two-character sequence `\n`
+    (backslash + n) so that each variable occupies exactly one
+    line. A backslash inside the original value is escaped as `\\`.
+    Predicates that operate line-by-line (TextMatches,
+    ShellExportsVariable, …) therefore see one logical entry per
+    line; predicates that read the entire body as bytes
+    (TextHasLines counting, JsonMatches, …) see the same escaped
+    text.
+
+2.3 Predicate compatibility — supported (unchanged behavior):
+      - FileExists                — always passes (env is always
+        present, even if empty); used as a no-op probe.
+      - TextHasLines              — counts variables.
+      - TextMatches               — line-regex against `export …`
+        lines.
+      - ShellExportsVariable      — true iff a corresponding env
+        var is set (this is the prime intended use).
+      - ShellDefinesVariable      — same as ShellExportsVariable
+        for `<env>` (every entry is exported by construction).
+      - ShellAddsToPath           — true iff PATH contains the
+        named segment, evaluated by splitting `$PATH` on `:`.
+        Implementation note: this is a special case for `<env>`;
+        the generic regex form would be brittle.
+
+2.4 Predicate compatibility — explicit failure (with the message
+    in §1.3):
+      - PropertiesDefinesKey     — env is not a .properties file.
+      - XmlMatches               — env is not XML.
+      - JsonMatches              — env is not JSON. (If we later
+        want JSON access, add a separate `<env:json>` pseudo-file;
+        out of scope here.)
+      - YamlMatches              — env is not YAML.
+
+2.5 Test override. Just as concrete-path tests substitute `$HOME`
+    with a fixture directory, `<env>` MUST be substitutable in
+    tests with a fixture map of name→value pairs. The evaluator
+    accepts an optional `env_override: Option<BTreeMap<String,
+    String>>`; when present, `<env>` materializes from the
+    override instead of `std::env::vars()`. Production code passes
+    `None`; the test harness passes `Some(map)`. No code path may
+    consult the real process env when an override is present.
+
+    Loaded from a YAML fixture as separately parsed properties
+    (NOT a pre-formatted blob):
+
+      env:
+        RUSTUP_HOME: /home/u/.rustup
+        PATH: /usr/bin:/home/u/.cargo/bin
+        FOO: "bar baz"
+
+    The `<env>` materialization (§2.1's `export NAME=VALUE` body
+    with sorted keys, escaped newlines, etc.) is a function of
+    this map; the fixture author writes the map, the runtime
+    builds the body. Override is total — keys absent from the
+    fixture map are treated as not set, regardless of the real
+    process env.
+
+2.6 YAML examples:
+
+      # require RUSTUP_HOME to be exported
+      file:
+        path: <env>
+        check:
+          shell-exports-variable: RUSTUP_HOME
+
+      # require ~/.cargo/bin on PATH
+      file:
+        path: <env>
+        check:
+          shell-adds-to-path: ~/.cargo/bin
+
+================================================================
+3. <executable:<name>> — introspected executable as a virtual JSON file
+================================================================
+
+3.1 Identifier. `<executable:NAME>` where NAME matches
+    `[A-Za-z0-9_.+-]+` (basic command-name characters). NAME is
+    treated as the bare command name resolved against the current
+    PATH; absolute paths are NOT permitted as NAME (use a concrete
+    simple-path with `is-executable` for that case).
+
+3.2 Materialization. `<executable:NAME>` materializes as a virtual
+    UTF-8 file whose body is a JSON object with the following
+    shape:
+
+      {
+        "name":          "<NAME>",
+        "found":         true | false,
+        "executable":    true | false,
+        "path":          "<absolute path resolved on PATH>" | null,
+        "command-full":  "<NAME> <flag>" | null,
+        "version-full":  "<full first-line(s) of stdout/stderr>" | null,
+        "version":       "<extracted x.y.z[.w][-pre+build]>" | null
+      }
+
+    All keys are always present; missing data is encoded as `null`
+    or `false`. Strings are UTF-8 (lossy decoding if the executable
+    output is not valid UTF-8, with replacement char U+FFFD).
+
+3.3 Resolution algorithm.
+    a) Look up NAME on PATH (`which`-style). If not found:
+       `found=false`, `executable=false`, all other fields null.
+       Stop.
+    b) If found but not executable (e.g. permission bit missing):
+       `found=true`, `executable=false`, `path` set, other fields
+       null. Stop.
+    c) Otherwise look up NAME in a built-in **custom-extractor
+       table** (§3.4). If a custom extractor is found, run its
+       configured probe(s); each entry yields candidate
+       `command-full` / `version-full` / `version`. Take the first
+       candidate that produces a non-null `version`.
+    d) If no custom extractor matches, OR all custom probes fail
+       to produce a `version`, fall back to a generic probe loop:
+       for FLAG in `--version`, `-version`, `-V`, `--help` (in
+       this order), invoke `NAME FLAG` with a 5-second timeout
+       and a 64KiB stdout/stderr cap. The first invocation that
+       exits 0 OR that produces non-empty stdout/stderr provides
+       `command-full = "NAME FLAG"` and `version-full =
+       <combined first 16 lines of stdout then stderr, trimmed>`.
+       Then extract `version` by scanning `version-full` for the
+       first match of the regex `\b\d+\.\d+(?:\.\d+)?
+       (?:[.+-][A-Za-z0-9.+-]+)?\b` (semver-ish; relaxed enough
+       to catch `1.2`, `1.2.3`, `1.2.3-alpha`, `1.2.3+build.5`).
+       If no match: `version=null` but `command-full` and
+       `version-full` are still set to whichever probe produced
+       output.
+
+3.4 Custom extractor table. Stored in code (a static slice or
+    similar; not user-configurable in this increment). Each entry:
+
+      struct CustomExtractor {
+        name: &'static str,           // e.g. "docker"
+        probes: &'static [Probe],     // ordered, first success wins
+      }
+      struct Probe {
+        flag: &'static str,           // e.g. "--version"
+        version_regex: &'static str,  // capture group 1 = version
+      }
+
+    Required initial coverage (the implementer MUST web-search the
+    actual `--version`-style flag and the exact stdout/stderr line
+    each tool emits, then encode the matching regex; do NOT guess or
+    download/install the tools — this is a desk-research task only).
+    Implementer note: cite the source URL inline as a one-line
+    comment next to each entry so a future maintainer can re-verify.
+    All entries fall back to the generic loop in §3.3(d) if their
+    custom probe(s) fail; if even the generic loop yields nothing,
+    the snapshot stays as nulls (per §4.2) — no entry is allowed to
+    hard-error the audit.
+
+    Required tools (group A — already in §3.4 working list):
+      docker, git, java
+
+    Required tools (group B — JVM ecosystem):
+      scala            (Scala 2 launcher; both `scala --version`
+                        and `scala -version` are common — pick the
+                        one that prints `Scala code runner …`)
+      scala3           (Scala 3 launcher when installed under
+                        the dedicated `scala3` name)
+      sbt              (typically `sbt --version`; sbt's first
+                        useful output is `sbt script version: …` /
+                        `sbt runner version: …` — extract the
+                        runner version)
+      cs               (Coursier CLI — `cs --version`)
+      coursier         (alias name some installs expose)
+      mill             (Mill build tool, `mill --version`)
+      kotlin           (`kotlin -version` → "Kotlin version 1.x.x")
+      kotlinc          (kotlin compiler; same family)
+
+    Required tools (group C — JS/TS ecosystem):
+      node, npm, npx, yarn, pnpm, deno, bun, tsc, eslint
+
+    Required tools (group D — Python + tooling):
+      python, python3, pip, pip3, uv, virtualenv, venv, poetry,
+      pyenv, conda
+        (note: `venv` is a stdlib module, not a binary; if it has
+         no executable resolution, omit from the table and let the
+         generic loop produce a `found=false` snapshot — do NOT
+         hard-error)
+
+    Required tools (group E — Rust + Cargo + companions):
+      cargo, rustc, rustup, clippy-driver, cargo-clippy, cargo-fmt
+
+    Required tools (group F — agentic coding tools, top-5 by
+    web-search of currently-prominent CLIs as of the implementation
+    date; web-search to pick the five — start the search with the
+    seed list "Claude Code, Aider, Cursor CLI, Codex CLI, OpenAI
+    Codex" and adjust if web-search shows clearly more prominent
+    alternatives):
+      claude            (Anthropic's Claude Code CLI)
+      …4 more, chosen by web-search
+
+    Required tools (group G — IDEs / editors, top-5 by web-search;
+    seed: "VS Code, Cursor, JetBrains Toolbox/IDEA, Zed, Neovim";
+    adjust if web-search clearly disagrees):
+      code              (VS Code)
+      cursor            (Cursor IDE)
+      …3 more, chosen by web-search
+
+    Required tools (group H — top-10 programming-language toolchains
+    by USEFULNESS, NOT popularity. Seed list MUST start with
+    `scala, ocaml, haskell` per the originating request; the
+    remaining 7 are chosen by web-searching for "useful programming
+    languages 2026" and similar queries and exercising judgment.
+    Languages whose primary toolchain is already covered above
+    (rustc/cargo, node, python3, kotlin, scala, java) count toward
+    the 10. Add the missing ones, e.g.):
+      scalac           (Scala compiler — Scala 2)
+      scala-cli        (newer all-in-one Scala launcher)
+      ocaml            (OCaml top-level)
+      ocamlfind, opam  (OCaml ecosystem)
+      ghc              (Haskell compiler — `ghc --version`)
+      cabal            (Haskell build tool)
+      stack            (Haskell tooling)
+      …and others to fill out 10 useful languages, e.g. one of
+      `lean`, `agda`, `coq`/`rocq`, `idris2`, `elixir`, `erl`,
+      `julia`, `r`, `go`, `clang`/`gcc`, `swift`, `dart`, `nim`,
+      `crystal`, `zig`. Implementer chooses, web-search to justify;
+      record the chosen 10 (and the rationale for trimming the
+      others) in a short comment block above the static table.
+
+    Sourcing protocol (hard rule for the implementer):
+      - Use web-search (no downloads, no installs, no subprocess
+        execution of the tool itself) to find the canonical
+        `--version` flag and a representative output line for each
+        entry.
+      - For each entry, leave a one-line `// source: <URL>` comment
+        next to the regex.
+      - If web-search yields nothing reliable for a tool, omit the
+        custom entry entirely — the generic fallback (§3.3(d)) will
+        still produce a usable snapshot; that is by design.
+
+    Adding further entries later is a code change + a test; the
+    custom-extractor table is deliberately NOT a user-facing
+    extension surface in this increment.
+
+3.4.1 Fallback chain (restated to make it impossible to misread).
+    For every `<executable:NAME>`:
+      1. PATH-resolve NAME (§3.3 a/b).
+      2. If a custom-extractor entry exists for NAME, run its
+         probes in order; the FIRST probe that yields a non-null
+         `version` wins.
+      3. If no custom entry, OR every custom probe yielded
+         `version=null`, fall through to the generic probe loop
+         (§3.3 d).
+      4. If the generic loop also fails to extract a version,
+         emit the snapshot with whichever fields ARE known and
+         `version=null` (and possibly `version-full=null`,
+         `command-full=null` if no probe even produced output).
+         The audit MUST proceed; controls predicated on
+         `version != null` simply FAIL with their own remediation
+         message.
+
+3.5 Predicate compatibility — supported:
+      - FileExists                — true iff the executable was
+        found on PATH (i.e. `found=true`). Behaves like a
+        presence probe.
+      - JsonMatches               — full access to the JSON shape
+        described in §3.2. This is the primary intended use.
+      - TextMatches               — the JSON pretty-printed body
+        is matched line-by-line; useful for ad-hoc grep without
+        writing JSON-path queries.
+
+3.6 Predicate compatibility — explicit failure (per §1.3):
+      - ShellExportsVariable / ShellDefinesVariable / ShellAddsToPath
+                                 — not a shell file.
+      - PropertiesDefinesKey     — not .properties.
+      - XmlMatches               — not XML.
+      - YamlMatches              — not YAML.
+      - TextHasLines             — counting lines of pretty-printed
+        JSON is meaningless; reject explicitly to prevent footguns.
+
+3.7 Determinism + caching. Within a single audit run, the resolution
+    in §3.3 is performed AT MOST ONCE per distinct
+    `<executable:NAME>` referenced. The resulting JSON snapshot is
+    cached and reused. A separate run re-resolves.
+
+3.8 Test override. The test harness MUST be able to substitute the
+    ENTIRE virtual JSON snapshot for any `<executable:NAME>`
+    reference, NOT just individual fields. The evaluator accepts
+    an optional `executable_override: Option<BTreeMap<String,
+    ExecutableSnapshot>>` keyed by NAME. When present, lookups
+    return the override's snapshot verbatim — no PATH resolution,
+    no subprocess execution, no custom-extractor lookup. Production
+    passes `None`; tests pass `Some(map)`.
+
+    The override is loaded from a YAML test-fixture file (see
+    inspirational/key/spec/0008's testing approach). The fixture
+    YAML expresses each snapshot field as a SEPARATELY parsed
+    property — NOT as one opaque JSON blob string. Concretely:
+
+      # tests/fixtures/.../executables.yaml
+      executables:
+        docker:
+          found: true
+          executable: true
+          path: /usr/bin/docker
+          command-full: docker --version
+          version-full: |
+            Docker version 20.10.7, build f0df350
+          version: 20.10.7
+        sbt:
+          found: true
+          executable: true
+          path: /opt/sbt/bin/sbt
+          command-full: sbt --version
+          version-full: |
+            sbt runner version: 1.9.8
+          version: 1.9.8
+        nonexistent-tool:
+          found: false
+          executable: false
+          path: null
+          command-full: null
+          version-full: null
+          version: null
+
+    Each entry's fields map 1:1 onto the JSON shape in §3.2; the
+    YAML loader builds an `ExecutableSnapshot` per entry. Same
+    approach for `<env>`: the fixture exposes an `env: { K: V, ... }`
+    map (separately parsed keys), NOT a pre-formatted
+    `export …`-blob.
+
+    Because executable probing involves subprocess execution, tests
+    MUST exercise the override path almost exclusively. A small
+    integration suite (≤5 cases) hits the real resolver against
+    vendored shell-script fixtures in `tests/fixtures/bin/` printing
+    known `--version` output, to prove the production code path
+    actually works.
+
+3.8.1 Meta-testing. There MUST be at least one meta-test that
+    proves the override mechanism itself functions correctly:
+      - Load a fixture YAML declaring a contrived snapshot for
+        `<executable:made-up-tool-12345>` with `version: "9.9.9"`.
+        Run an evaluator against it, asserting the snapshot is
+        observed verbatim AND that no PATH resolution / subprocess
+        was attempted (e.g. by sandboxing PATH to an empty
+        directory and asserting no syscalls; if direct syscall
+        sandboxing is impractical, the test MUST at minimum unset
+        PATH for the test process and confirm the predicate still
+        sees `version="9.9.9"` — a non-overridden lookup would
+        otherwise fail).
+      - Symmetric meta-test for `<env>`: fixture sets
+        `env: { TEST_FIXTURE_OK: "1" }`, confirm
+        `shell-exports-variable: TEST_FIXTURE_OK` PASSes even when
+        the real process has no such variable.
+      - A negative meta-test: a fixture that DOES NOT declare an
+        executable, then an evaluator referencing
+        `<executable:also-not-declared>` with the override active,
+        MUST treat that as `found=false` (override is total — any
+        NAME absent from the override map is treated as not found,
+        rather than silently falling back to PATH). Document and
+        test this rule.
+
+    Rationale: the override path is the single biggest test-gating
+    surface in this increment; if it silently falls back to real
+    PATH/subprocess, half the test suite secretly depends on the
+    host environment and we lose hermeticity.
+
+3.9 YAML examples:
+
+      # require docker >= 20
+      file:
+        path: <executable:docker>
+        check:
+          all:
+            - file-exists
+            - json-matches: '.found == true and (.version | split(".")[0] | tonumber) >= 20'
+
+      # require git installed (no version constraint)
+      file:
+        path: <executable:git>
+        check: file-exists
+
+      # require some python3 with at least major.minor
+      file:
+        path: <executable:python3>
+        check:
+          json-matches: '.version | test("^\\d+\\.\\d+")'
+
+================================================================
+4. Error messages
+================================================================
+
+4.1 When a predicate is rejected as inapplicable (§1.3, §2.4,
+    §3.6), the failure message MUST name BOTH the predicate AND
+    the pseudo-file, e.g.:
+
+      "predicate `xml-matches` is not applicable to pseudo-file
+       `<env>`; use a shell- or text- predicate instead"
+
+4.2 When `<executable:NAME>` resolution fails because of subprocess
+    timeout / panic / non-UTF-8 output beyond recovery, the JSON
+    snapshot is still produced with `found=true, executable=true,
+    path=…, command-full=<probe-attempted>, version-full=null,
+    version=null`. The audit then evaluates predicates against
+    this snapshot as usual; a control that requires
+    `version != null` will simply FAIL with its own remediation
+    message. We do NOT hard-error the whole audit on resolution
+    issues for a single executable.
+
+================================================================
+5. Backwards compatibility
+================================================================
+
+5.1 Existing user-defined.yaml files using only concrete simple-paths
+    are unaffected; pseudo-files are an additive feature.
+
+5.2 The simple-path parser must be extended to accept the
+    `<…>` form. Any concrete simple-path containing a literal `<`
+    or `>` was already disallowed by 0005-rules.txt's "simple"
+    constraint, so no real-world filename is ambiguated.
+
+================================================================
+6. Tests
+================================================================
+
+6.1 Pure AST/parser tests:
+      - `<env>`, `<executable:docker>`, `<executable:git-lfs>`,
+        `<executable:weird.name+1>` parse;
+      - `<>`, `<env:json>` (not yet defined), `<executable:>`,
+        `<executable:/abs/path>`, `<executable:has space>` reject
+        with clear errors at parse time.
+
+6.2 `<env>` evaluator tests (using `env_override`):
+      - empty env materializes to empty body; `text-has-lines:
+        max=0` passes;
+      - `shell-exports-variable: FOO` passes when FOO is in the
+        override, fails otherwise;
+      - `shell-adds-to-path: /opt/x/bin` true iff PATH override
+        contains `/opt/x/bin` as a colon-separated segment;
+      - inapplicable predicates (xml-matches, properties-…,
+        yaml-matches, json-matches) fail with the §4.1 message
+        format;
+      - newlines in a value are escaped to literal `\n` and the
+        line count is unchanged.
+
+6.3 `<executable:NAME>` evaluator tests (using
+    `executable_override`):
+      - not-found snapshot: `file-exists` predicate fails;
+      - found-but-not-executable: `file-exists` fails (consistent
+        with §3.5 wording — `file-exists` is true iff
+        `found=true`; we MUST also document this nuance: a stat-
+        able non-executable path still counts as `found=true` for
+        the FileExists predicate. Confirm during implementation
+        and align test + spec wording);
+      - happy path: snapshot with `version="20.10.7"` →
+        `json-matches: '.version | startswith("20.")'` passes;
+      - inapplicable predicates fail with §4.1 message;
+      - `text-has-lines` rejected per §3.6.
+
+6.4 Integration tests (real subprocesses, vendored fixture):
+      - place `tests/fixtures/bin/dummy-tool` (a shell script
+        printing `dummy-tool 1.2.3`), prepend that dir to PATH in
+        the test, evaluate `<executable:dummy-tool>` end-to-end,
+        assert `version="1.2.3"` and `command-full="dummy-tool
+        --version"`.
+      - same script renamed to a name with a custom-extractor
+        entry (e.g. shadow `git`) to verify the custom-extractor
+        path is taken.
+      - a vendored script that prints non-zero, no `--version`,
+        but prints `My Tool v9.9.9` on `--help`; verify fallback
+        loop reaches `--help` and extracts `9.9.9`.
+
+6.5 Caching tests:
+      - within one audit run, mutating the env_override mid-run
+        does NOT change the snapshot returned to a second
+        predicate (snapshot is cached after first read).
+      - the same is true for executable snapshots.
+
+6.6 Guide tests (mirrors 0008's testing approach):
+      - `key audit guide` (or whatever the current guide command
+        is) lists `<env>` and `<executable:NAME>` with at least
+        one YAML example each;
+      - the YAML examples in the guide are extracted and
+        round-trip parse/evaluate against fixture overrides.
+
+6.7 Meta-tests (per §3.8.1):
+      - `<executable:made-up-tool-12345>` overridden with
+        `version: "9.9.9"` evaluates to `version="9.9.9"` even
+        when PATH is unset / empty. Asserts the override path
+        is total and does NOT silently fall back to real PATH.
+      - `<env>` overridden with `{ TEST_FIXTURE_OK: "1" }` makes
+        `shell-exports-variable: TEST_FIXTURE_OK` PASS even when
+        the host process has no such variable.
+      - With `executable_override: Some(map)` active, a reference
+        to `<executable:NAME>` for a NAME absent from `map` is
+        treated as `found=false` (not as "fall through to PATH").
+      - Symmetric rule for `env_override`: keys absent from the
+        override map are treated as not set.
+      - The fixture-loader itself is exercised: a malformed YAML
+        fixture (missing required field, wrong type) MUST fail
+        with a clear, line-numbered error rather than silently
+        coercing.
+
+================================================================
+7. Out of scope (this increment)
+================================================================
+- User-extensible custom-extractor table (could be a follow-up
+  with a YAML-loaded extra table; this increment keeps the table
+  in code).
+- Other pseudo-files (`<process-list>`, `<systemd-units>`,
+  `<cargo-metadata>`, `<env:json>`, etc.). The grammar admits
+  them; defining them is left to follow-up increments.
+- Cross-pseudo-file composition (e.g. computing a
+  `<executable:NAME>` whose NAME comes from `<env>`).
+- Writing/setting env or installing executables. Pseudo-files
+  remain strictly read-only.
+
+================================================================
+8. Verification
+================================================================
+- `cargo build --release` clean.
+- `cargo fmt --check` clean.
+- `./test.sh` PASS, including the new pseudo-file unit and
+  integration tests, the guide tests, and the override
+  determinism tests.

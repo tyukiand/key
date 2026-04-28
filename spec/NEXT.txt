@@ -1,0 +1,116 @@
+Iteration: implement increment 0009 — pseudo-files (`<env>` and
+`<executable:NAME>`), with a large web-searched custom-extractor
+table and YAML-fixture-driven test overrides + meta-tests.
+
+Authoritative spec: spec/0009-pseudo-files.txt (read it carefully,
+it has 8 numbered top-level sections; §3.4 lists required tool
+groups A–H; §3.8 + §3.8.1 mandate the YAML-fixture override + meta-
+testing approach). Background: spec/0005-rules.txt for the existing
+proposition + predicate AST; spec/0008 for the testing approach.
+
+Hard rules:
+  - Append " (done)" to each numbered item below as it finishes,
+    or " (skipped: <reason>)" if obsolete. Do not delete prior
+    markers.
+  - This is the `key` project (not `shall`). Build with cargo;
+    `./test.sh` runs the test suite (it adds `--features testing`
+    automatically — do not run bare `cargo test`).
+  - Web-search is permitted ONLY for sourcing `--version` flags
+    and version-line formats for §3.4 entries. NO downloads, NO
+    installs, NO subprocess execution of the tools themselves.
+    Cite the source URL inline (`// source: <URL>`) next to each
+    custom-extractor entry.
+  - Pseudo-files are read-only. No control may write env or
+    install executables.
+
+1. Read spec/0009-pseudo-files.txt end-to-end, plus
+   spec/0005-rules.txt §"FilePredicateAst" and §"Proposition".
+   Note (in a short module-header comment) which spec sections
+   you are implementing where. (done)
+2. Extend the simple-path grammar to accept pseudo-file forms
+   `<keyword>` and `<keyword:arg>` (per §1.1). Reject malformed
+   forms (`<>`, `<executable:>`, `<executable:has space>`,
+   `<executable:/abs>`) at parse time with line-numbered errors. (done)
+3. Implement `<env>` materialization (§2.1–2.4):
+   sorted ASCII-by-name `export NAME=VALUE` body, newlines in
+   values escaped to literal `\n`, backslashes to `\\`.
+   Predicate compatibility per §2.3 (supported) and §2.4
+   (explicit failure with the §4.1 message format). (done)
+4. Implement `env_override` (§2.5): evaluator takes
+   `Option<BTreeMap<String,String>>`; when Some, materialization
+   uses the map exclusively (no `std::env::vars()`); override is
+   total (absent keys = not set). (done)
+5. Implement `<executable:NAME>` materialization (§3.1–3.3):
+   PATH resolution → custom-extractor lookup → generic fallback
+   loop (`--version` → `-version` → `-V` → `--help`, 5s timeout,
+   64KiB cap) → semver-ish regex extraction. Full snapshot JSON
+   per §3.2 with all keys always present (nulls when unknown). (done)
+6. Build the static custom-extractor table (§3.4). Use web-search
+   to source the canonical `--version` flag and a representative
+   output line for each tool. Cite `// source: <URL>` inline. Cover
+   ALL of: (done)
+     - group A: docker, git, java
+     - group B: scala, scala3, sbt, cs, coursier, mill, kotlin,
+       kotlinc
+     - group C: node, npm, npx, yarn, pnpm, deno, bun, tsc, eslint
+     - group D: python, python3, pip, pip3, uv, virtualenv,
+       poetry, pyenv, conda  (omit `venv` per §3.4 group D note)
+     - group E: cargo, rustc, rustup, clippy-driver, cargo-clippy,
+       cargo-fmt
+     - group F (top-5 agentic coding tools, web-search): seed
+       with claude, then 4 more by web-search of "AI coding CLI
+       tools" / similar
+     - group G (top-5 IDEs, web-search): seed with code, cursor,
+       then 3 more
+     - group H (top-10 useful languages, web-search; MUST start
+       with scala, ocaml, haskell): scalac/scala-cli, ocaml,
+       opam, ocamlfind, ghc, cabal, stack, plus enough additional
+       toolchain binaries to cover 10 distinct useful languages
+       (rustc/cargo, node, python3, kotlin, scala, java already
+       counted from earlier groups). Justify the chosen 10 in a
+       comment block above the table.
+   For tools where web-search yields nothing reliable, OMIT the
+   custom entry — the generic fallback handles it. (done)
+7. Implement `executable_override` (§3.8): evaluator takes
+   `Option<BTreeMap<String, ExecutableSnapshot>>`; when Some,
+   lookups bypass PATH and subprocess entirely. Override is total
+   (absent NAMEs = `found=false`). (done)
+8. Implement the YAML fixture loader for both overrides (§3.8 +
+   §2.5). Fixture shape:
+     env:
+       <KEY>: <VALUE>
+       …
+     executables:
+       <NAME>:
+         found: bool
+         executable: bool
+         path: string|null
+         command-full: string|null
+         version-full: string|null
+         version: string|null
+   Each field is parsed separately (NOT one opaque JSON blob).
+   Malformed fixtures must fail with line-numbered errors. (done)
+9. Wire pseudo-file resolution + caching into the evaluator
+   (§1.4, §3.7): resolve at most once per pseudo-file per audit
+   run; cache snapshot for the duration of that run. (done)
+10. Add error-message formatting for inapplicable predicates
+    (§4.1). Every "predicate X not applicable to <Y>" message
+    names BOTH the predicate AND the pseudo-file. (done)
+11. Write unit tests per §6.1 (parser), §6.2 (env evaluator with
+    override), §6.3 (executable evaluator with override), §6.5
+    (caching). (done)
+12. Write integration tests per §6.4: vendor small shell scripts
+    under tests/fixtures/bin/ (e.g. `dummy-tool` printing
+    `dummy-tool 1.2.3`; a fixture shadowing `git` to verify
+    custom-extractor path; a fixture printing version only on
+    `--help` to verify fallback loop). Cap at ~5 cases. (done)
+13. Update `key audit guide` (or current guide command) to
+    document `<env>` and `<executable:NAME>` with at least one
+    YAML example each, and write the §6.6 round-trip guide test. (done)
+14. Write meta-tests per §6.7 + §3.8.1: prove the override
+    mechanism is total and hermetic. Include the negative case
+    (NAME absent from override map → found=false, not fallback).
+    Include the malformed-fixture-rejection case. (done)
+15. Run `./test.sh` and confirm PASS. (done: cargo test + fmt --check pass; ci.sh's apt-get + rustup steps skipped — sandbox lacks root)
+16. Run `cargo build --release` and confirm clean. (done)
+17. git add -A && git commit -m "pseudo-files: <env> and <executable:NAME> with web-sourced extractor table + YAML-fixture overrides + meta-tests".
