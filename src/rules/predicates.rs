@@ -6,6 +6,74 @@ use crate::rules::ast::{FilePredicateAst, PseudoFile};
 use crate::rules::pseudo::{inapplicable_predicate_message, PseudoKind, PseudoSnapshot};
 use crate::rules::queries;
 
+fn strip_shell_quotes(s: &str) -> &str {
+    let trimmed = s.trim();
+    if trimmed.len() >= 2 {
+        let bytes = trimmed.as_bytes();
+        if (bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\'')
+        {
+            return &trimmed[1..trimmed.len() - 1];
+        }
+    }
+    trimmed
+}
+
+fn evaluate_shell_value_matches(
+    subject: &Subject<'_>,
+    name: &str,
+    value_regex: &str,
+    require_export: bool,
+) -> Result<(), String> {
+    let content = read_subject_text(subject)?;
+    let line_pattern = if require_export {
+        format!(r"^\s*export\s+{}=(.*)", regex::escape(name))
+    } else {
+        format!(r"^\s*(?:export\s+)?{}=(.*)", regex::escape(name))
+    };
+    let line_re = Regex::new(&line_pattern)
+        .map_err(|e| format!("invalid regex {:?}: {}", line_pattern, e))?;
+    let value_re =
+        Regex::new(value_regex).map_err(|e| format!("invalid regex {:?}: {}", value_regex, e))?;
+    let mut last_rhs: Option<String> = None;
+    for line in content.lines() {
+        if let Some(caps) = line_re.captures(line) {
+            let raw_rhs = caps.get(1).unwrap().as_str();
+            let rhs = strip_shell_quotes(raw_rhs);
+            if value_re.is_match(rhs) {
+                return Ok(());
+            }
+            last_rhs = Some(rhs.to_string());
+        }
+    }
+    let key = if require_export {
+        "shell-exports"
+    } else {
+        "shell-defines"
+    };
+    match last_rhs {
+        Some(rhs) => Err(format!(
+            "{}: variable {:?} found but rhs {:?} does not match regex {:?} in {}",
+            key,
+            name,
+            rhs,
+            value_regex,
+            subject.path_for_display()
+        )),
+        None => Err(format!(
+            "{}: no `{} {}=...` line found in {}",
+            key,
+            if require_export {
+                "export"
+            } else {
+                "(export?)"
+            },
+            name,
+            subject.path_for_display()
+        )),
+    }
+}
+
 /// A predicate's evaluation subject: either a concrete file on disk or a
 /// pseudo-file snapshot (already resolved + cached by the EvalContext).
 #[derive(Clone)]
@@ -39,6 +107,8 @@ pub fn desugar(pred: &FilePredicateAst) -> Option<FilePredicateAst> {
             let pattern = format!(r#"^\s*export\s+PATH="?\${}:\$PATH"?"#, regex::escape(var));
             Some(FilePredicateAst::TextMatchesRegex(pattern))
         }
+        FilePredicateAst::ShellExportsValueMatches { .. } => None,
+        FilePredicateAst::ShellDefinesVariableValueMatches { .. } => None,
         FilePredicateAst::FileExists => None,
         FilePredicateAst::TextMatchesRegex(_) => None,
         FilePredicateAst::TextContains(_) => None,
@@ -69,16 +139,6 @@ pub fn evaluate_predicate_subject(
     }
 
     if let Some(desugared) = desugar(pred) {
-        // Special case (spec §2.3): on `<env>`, `shell-adds-to-path: SEG`
-        // checks whether $PATH contains SEG as a colon-separated segment, NOT
-        // a regex match against export lines.
-        if let FilePredicateAst::ShellAddsToPath(seg) = pred {
-            if let Subject::Pseudo(pseudo, snap) = subject {
-                if matches!(pseudo, PseudoFile::Env) {
-                    return env_path_contains_segment(snap, seg);
-                }
-            }
-        }
         return evaluate_predicate_subject(&desugared, subject);
     }
 
@@ -247,6 +307,12 @@ pub fn evaluate_predicate_subject(
         | FilePredicateAst::ShellAddsToPath(_) => {
             unreachable!("should have been desugared")
         }
+        FilePredicateAst::ShellExportsValueMatches { name, value_regex } => {
+            evaluate_shell_value_matches(subject, name, value_regex, true)
+        }
+        FilePredicateAst::ShellDefinesVariableValueMatches { name, value_regex } => {
+            evaluate_shell_value_matches(subject, name, value_regex, false)
+        }
     }
 }
 
@@ -281,10 +347,12 @@ fn pseudo_inapplicable_check(pred: &FilePredicateAst, pseudo: &PseudoFile) -> Op
             Some(inapplicable_predicate_message("yaml-matches", pseudo))
         }
         // <executable:NAME> §3.6
-        (PseudoFile::Executable(_), FilePredicateAst::ShellExports(_)) => {
+        (PseudoFile::Executable(_), FilePredicateAst::ShellExports(_))
+        | (PseudoFile::Executable(_), FilePredicateAst::ShellExportsValueMatches { .. }) => {
             Some(inapplicable_predicate_message("shell-exports", pseudo))
         }
-        (PseudoFile::Executable(_), FilePredicateAst::ShellDefinesVariable(_)) => {
+        (PseudoFile::Executable(_), FilePredicateAst::ShellDefinesVariable(_))
+        | (PseudoFile::Executable(_), FilePredicateAst::ShellDefinesVariableValueMatches { .. }) => {
             Some(inapplicable_predicate_message("shell-defines", pseudo))
         }
         (PseudoFile::Executable(_), FilePredicateAst::ShellAddsToPath(_)) => {
@@ -303,25 +371,5 @@ fn pseudo_inapplicable_check(pred: &FilePredicateAst, pseudo: &PseudoFile) -> Op
             Some(inapplicable_predicate_message("text-has-lines", pseudo))
         }
         _ => None,
-    }
-}
-
-/// `<env>` shell-adds-to-path: split $PATH on ':' and check membership.
-fn env_path_contains_segment(snap: &PseudoSnapshot, segment: &str) -> Result<(), String> {
-    if let PseudoKind::Env { env_map } = &snap.kind {
-        if let Some(path_val) = env_map.get("PATH") {
-            for seg in path_val.split(':') {
-                if seg == segment {
-                    return Ok(());
-                }
-            }
-        }
-        Err(format!(
-            "PATH does not contain segment {:?} in <env>",
-            segment
-        ))
-    } else {
-        // Should not happen given caller guard.
-        Err("internal error: env_path_contains_segment called on non-env pseudo".into())
     }
 }

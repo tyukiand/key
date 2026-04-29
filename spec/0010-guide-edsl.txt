@@ -1,0 +1,422 @@
+Make the `key audit guide` output a derived artifact of an
+interpretation-polymorphic EDSL ("guide-EDSL") whose nodes name a
+canonical Feature, so that documentation, examples, and tests can
+no longer drift out of step with the implementation.
+
+This is a structural change to how the guide and its enforcement
+work; user-visible CLI surface stays the same.
+
+================================================================
+0. Why
+================================================================
+The previous guide-exhaustiveness machinery (`key audit guide` +
+its block-extraction round-trip test) successfully checks that
+every documented YAML block parses. It does NOT check the reverse
+direction (every implemented feature is documented), and that
+hole was concretely visible in spec 0009: the `<env>` and
+`<executable:...>` test-fixture YAML format was implemented and
+exercised by the meta-tests, but never made it into the guide.
+Nobody noticed because no test was structurally capable of
+noticing.
+
+The fix is a single source of truth from which guide text,
+worked examples, and feature coverage are all DERIVED, plus a
+hard test that ties every implemented AST node back to that
+single source.
+
+================================================================
+1. The Feature enum
+================================================================
+
+1.1 A new `pub enum Feature { ... }` enumerates every distinct
+    capability the user can invoke through controls or test
+    fixtures. Granularity is roughly 1:1 with AST nodes — see
+    §1.4 for the invariant.
+
+1.2 Initial roster (illustrative; finalize during implementation
+    by walking the existing AST modules):
+
+      // proposition variants
+      PropositionFile,
+      PropositionForall,
+      PropositionExists,
+      PropositionAll,
+      PropositionAny,
+      PropositionConditionally,    // existing, see CONTINUE.txt
+      PropositionNot,
+
+      // file-predicate variants (per spec 0005-rules.txt)
+      PredicateFileExists,
+      PredicateTextHasLines,
+      PredicateTextMatches,
+      PredicateTextContains,
+      PredicateShellExportsVariable,
+      PredicateShellDefinesVariable,
+      PredicateShellAddsToPath,
+      PredicatePropertiesDefinesKey,
+      PredicateXmlMatches,
+      PredicateJsonMatches,
+      PredicateYamlMatches,
+      PredicateAnd,
+      PredicateOr,
+      PredicateNot,
+      PredicateConditionally,
+
+      // pseudo-files (spec 0009)
+      PseudoFileEnv,
+      PseudoFileExecutable,
+
+      // control container shape (spec 0007)
+      ControlFile,
+      ControlIdField,
+      ControlTitleField,
+      ControlDescriptionField,
+      ControlRemediationField,
+
+      // test fixtures (spec 0009 §3.8 / §2.5) — THE HOLE
+      // the user just hit
+      TestFixtureFormat,
+      TestFixtureEnvOverride,
+      TestFixtureExecutableOverride,
+      TestFixtureMalformedRejection,
+
+      // CLI surface
+      CliAuditRun,
+      CliAuditNew,
+      CliAuditAdd,
+      CliAuditList,
+      CliAuditDelete,
+      CliAuditGuide,
+      CliAuditTest,
+      CliAuditIgnoreFlag,
+      CliAuditWarnOnlyFlag,
+
+1.3 Feature is `Copy + Eq + Hash + Debug`; the canonical name is
+    derived from the variant ident (machine-readable).
+
+1.4 Uniqueness invariant (spec §0 statement (4.b)): no two AST
+    nodes may claim the same Feature. Enforced by a unit test
+    that walks every AST node and aggregates the multi-set of
+    declared features; any duplicate is a hard test failure
+    naming both nodes.
+
+1.5 Completeness invariant: every declared Feature MUST be
+    claimed by exactly one AST node (otherwise it is dead weight).
+    Enforced by the same unit test.
+
+1.6 Optional parent. Each Feature may declare a single optional
+    parent Feature via a const fn or static map:
+
+      fn parent(self) -> Option<Feature>;
+
+    Semantics: the parent is the higher-level capability that
+    the child specializes or supports. Examples:
+
+      PseudoFileEnv.parent()                 == None     // root
+      TestFixtureEnvOverride.parent()        == Some(PseudoFileEnv)
+      PseudoFileExecutable.parent()          == None     // root
+      TestFixtureExecutableOverride.parent() == Some(PseudoFileExecutable)
+      TestFixtureFormat.parent()             == None     // (or grouped under
+                                                         //  a future TestingMeta)
+      PredicateXmlMatches.parent()           == None     // root
+
+    Roots are the features that explain WHAT the tool does at the
+    user-facing level; non-roots refine HOW (test mechanics,
+    edge-case rationale, internal-meta).
+
+1.7 Forest invariant. The parent relation MUST form a forest —
+    no cycles, no diamonds. Enforced by a unit test that:
+      a) walks every Feature, follows .parent() links, and
+         confirms termination at None within at most N steps
+         (N = total feature count, generous bound);
+      b) confirms no two distinct features share a child
+         relationship that would create a DAG-but-not-tree
+         (i.e. each Feature appears at most once as a child).
+    Cycle / non-forest structure is a hard test failure naming
+    the offending features.
+
+1.8 Roots-must-be-terse invariant. Every root Feature (any
+    Feature with `.parent() == None`) MUST be covered by the
+    TERSE pass of the guide interpreter (§4.1.a). Enforced by
+    the coverage test in §4.4. Non-root Features MAY appear
+    only in the verbose pass (typical for test-mechanics
+    children). The combination — every root in terse, every
+    Feature somewhere — guarantees that the terse guide is a
+    complete user-facing capability list and the verbose guide
+    adds the supporting detail.
+
+================================================================
+2. AST → Feature mapping
+================================================================
+
+2.1 Every AST node — Proposition variant, FilePredicate variant,
+    ControlFile field, pseudo-file constructor, test-fixture
+    record — implements a tiny trait:
+
+      pub trait FeatureBearing {
+          fn features(&self) -> &'static [Feature];
+      }
+
+    Most variants return a single-element slice. Composite
+    variants (e.g. a `Conditionally` proposition) return their
+    own discriminator only — the inner sub-AST is walked
+    separately by the coverage interpreter (§4).
+
+2.2 The mapping is implemented per variant, not derived by macro
+    in the first cut (clarity over cleverness). A follow-up
+    increment may switch to a `#[derive(FeatureBearing)]` macro
+    once the surface settles.
+
+================================================================
+3. The guide-EDSL
+================================================================
+
+3.1 A new module `src/guide_edsl/` contains the EDSL. Each EDSL
+    node corresponds to one Feature (by §1.4) — i.e. the EDSL
+    is the canonical SOURCE of feature coverage.
+
+3.2 EDSL node shape (sketched):
+
+      pub enum GuideNode {
+          Section { id: SectionId, title: &'static str,
+                    body: Vec<GuideNode> },
+          Prose { text: &'static str },
+          ExampleControl { feature: Feature,
+                           yaml: &'static str,
+                           expect: ExampleExpect },
+          ExampleFixture { feature: Feature,
+                           yaml: &'static str },
+          FeatureRef { feature: Feature, blurb: &'static str },
+          // ... more node kinds as needed
+      }
+
+3.3 Each `Example*` node carries the EXACT YAML it is documenting
+    (no separate test fixture file). This means the same byte
+    string is documentation AND test input AND coverage
+    contribution.
+
+3.4 The full guide is built from a single static GuideNode tree
+    that lives in code (no Markdown source-of-truth). Markdown is
+    the OUTPUT, not the input.
+
+================================================================
+4. Three (four) interpretations of the EDSL
+================================================================
+
+4.1 Interpretation 1 — guide text. Two passes, switched by a
+    `-v` / `--verbose` flag on `key audit guide`:
+
+      a) Terse pass (default, `key audit guide`):
+         every EDSL node carries a `detail: bool` (default
+         false). The terse interpreter emits all non-detail
+         content verbatim. Wherever a `detail: true` subtree
+         (or a contiguous run of them) is encountered, it is
+         REPLACED by a single line:
+
+           > rerun `key audit guide -v` for more info on
+           > <node.terse_summary>
+
+         where `terse_summary` is a short string each
+         detail-bearing node MUST supply at construction time.
+         If multiple consecutive detail nodes share a parent
+         section, the line lists them comma-separated:
+
+           > rerun `key audit guide -v` for more info on
+           > <env> fixtures, <executable:NAME> overrides,
+           > meta-test rationale.
+
+      b) Verbose pass (`key audit guide -v`):
+         every EDSL node is emitted verbatim, including all
+         `detail: true` subtrees. This is the previous
+         `key audit guide` output.
+
+    Both passes share the same Markdown emitter; the terse pass
+    swaps in the rerun-line whenever it would otherwise descend
+    into a `detail: true` subtree. Section IDs and headings of
+    non-detail content are byte-identical between the two
+    passes; only the detail substitutions differ. Tested by the
+    Overview-vs-Detail consistency test in §6.4 (renamed
+    Terse-vs-Verbose).
+
+    Editorial guidance for marking nodes `detail: true`:
+      - rationale prose, historical context, edge-case
+        warnings, full meta-test commentary → detail.
+      - canonical worked examples and the AST/predicate
+        reference → NOT detail.
+      - a one-line summary of every feature MUST appear in the
+        terse pass; if a feature exists only inside a detail
+        subtree, the registry/coverage test (§4.4) flags the
+        coverage gap and forces a non-detail mention to be
+        added.
+
+4.2 Interpretation 2 — complete project. The EDSL tree is
+    interpreted into an on-disk project layout under a tempdir:
+      - `controls/` populated with control files extracted from
+        `ExampleControl` nodes,
+      - `tests/fixtures/` populated from `ExampleFixture` nodes,
+      - per-control assertions (PASS / FAIL / load-error)
+        derived from each `ExampleControl`'s `expect`.
+    A new test harness drives this materialized project end-to-
+    end: load every control, run it against the matching
+    fixture, assert the expected outcome.
+
+4.3 Interpretation 3 — feature coverage. The EDSL tree is
+    walked and every `Example*` / `FeatureRef` node contributes
+    its `feature` to a `BTreeSet<Feature>`. The result is the
+    set of features the guide DOCUMENTS.
+
+4.4 Interpretation 4 — exhaustiveness check (composite of §2 +
+    §4.3). A single unit test enforces THREE distinct
+    properties:
+      a) FULL coverage: the set of all Features (via the AST
+         walk in §1.4) equals the set of features documented
+         anywhere in the guide (terse + verbose). Difference
+         in either direction is a clear failure: missing-from-
+         guide names the Feature, missing-from-implementation
+         names the orphan EDSL node.
+      b) ROOT coverage in terse: every root Feature
+         (`.parent() == None`) is covered by the TERSE pass
+         (§4.1.a). A root that exists only in a `detail: true`
+         subtree is a hard failure — the user-facing capability
+         list must be complete in the default pass.
+      c) Children may live in detail. A non-root Feature MAY
+         appear exclusively in `detail: true` subtrees; this
+         is the expected pattern for test-mechanics children
+         like `TestFixtureEnvOverride` (parent =
+         `PseudoFileEnv`).
+
+4.5 The exhaustiveness check is NON-skippable. It runs in
+    `cargo test --features testing` and ALSO as a doc-emitting
+    unit test in the default test profile so a forgotten
+    `--features testing` cannot hide it.
+
+================================================================
+5. Migration plan
+================================================================
+
+5.1 Move the existing `src/guide.md` (or wherever the current
+    guide source lives) into the EDSL by porting one section
+    at a time. Each ported section gains its `feature` claims
+    and `expect` annotations.
+
+5.2 Migration is COMPLETE only when interpretation 4 reports
+    set equality. Until then, keep both representations and let
+    the test fail loudly.
+
+5.3 In-tree bonus deliverables surfaced by this design:
+      - the missing `TestFixtureFormat` / `TestFixtureEnvOverride`
+        / `TestFixtureExecutableOverride` /
+        `TestFixtureMalformedRejection` features land their
+        EDSL nodes (with worked YAML examples), so the
+        "no docs for testing `<env>` / `<executable:...>`"
+        failure that motivated this work is permanently closed.
+
+================================================================
+6. Tests
+================================================================
+
+6.1 Uniqueness + completeness of Feature → AST mapping (§1.4 +
+    §1.5).
+
+6.2 Round-trip tests on every `ExampleControl` and
+    `ExampleFixture`: parse the embedded YAML through the
+    production loader, evaluate against the embedded fixture,
+    assert the embedded `expect`.
+
+6.3 Coverage-set equality (§4.4) across all four
+    interpretations.
+
+6.4 Overview-vs-Detail interpreter consistency: the Overview's
+    section list MUST be a subsequence of the Detail's section
+    list (no new section appearing only in one).
+
+6.5 Materialized-project test (§4.2): the on-disk project
+    interpreted from the EDSL, when fed to `key audit run`,
+    produces the expected per-control pass/fail tally.
+
+================================================================
+6.X Two surgical predicate fixes folded into this iteration
+    (cheap, and folding them in keeps the EDSL migration honest
+    — the broken behavior would otherwise have to be encoded as
+    "the way it is" in the new guide):
+
+6.X.1 Drop the `<env>` special-case for `shell-adds-to-path`.
+      The current implementation
+      (src/rules/predicates.rs:309-327) special-cases `<env>`
+      to "split $PATH on ':' and check segment membership",
+      which silently changes the meaning of the predicate's
+      argument (variable NAME on a file vs path SEGMENT on
+      `<env>`). Remove the special case entirely.
+      `shell-adds-to-path: VARNAME` keeps its honest semantics
+      everywhere: PASS iff the (rendered) text contains a line
+      `export PATH="$VARNAME:$PATH"`. On `<env>`, that pattern
+      does not appear (env materializes fully-expanded values),
+      so the predicate simply FAILs there — which is the
+      correct, consistent behavior. The Feature
+      `PredicateShellAddsToPath` keeps its existing identity;
+      no new Feature added.
+
+6.X.2 Add an optional rhs-regex argument to
+      `shell-exports-variable` (and analogously
+      `shell-defines-variable`). YAML form:
+
+        # bare-string form (existing): just check var is exported
+        check:
+          shell-exports-variable: RUSTUP_HOME
+
+        # mapping form (new): also constrain the rhs
+        check:
+          shell-exports-variable:
+            name: PATH
+            value-matches: "(^|:)/usr/bin(:|$)"
+
+      Semantics: PASS iff (a) some line `export NAME=...`
+      exists, AND (b) if `value-matches` is provided, the
+      portion AFTER the `=` (with surrounding quotes stripped)
+      matches the regex.
+      Adds two new Features: `PredicateShellExportsVariableValueMatches`
+      and `PredicateShellDefinesVariableValueMatches`, each
+      with parent `PredicateShellExportsVariable` /
+      `PredicateShellDefinesVariable` respectively (per §1.6).
+      That places the new "refined rhs" capability under its
+      umbrella feature: terse guide mentions
+      `shell-exports-variable` and links to verbose for the
+      `value-matches` refinement. This is the canonical
+      pattern this spec was designed for.
+
+6.X.3 Tests:
+      - file fixture with `export PATH="$JAVA_HOME_BIN:$PATH"`:
+        `shell-adds-to-path: JAVA_HOME_BIN` PASS (regression);
+      - `<env>` fixture with `PATH=/usr/bin:/home/u/.cargo/bin`:
+        `shell-adds-to-path: JAVA_HOME_BIN` now FAILs (was
+        PASSing via the special-case); failure message is
+        clear and names the predicate.
+      - `<env>` fixture: `shell-exports-variable: PATH` PASS;
+        `shell-exports-variable: { name: PATH, value-matches:
+        "(^|:)/home/u/.cargo/bin(:|$)" }` PASS;
+        same with non-matching regex FAILs and the message
+        names both the regex and the rhs that didn't match.
+      - parser test: bare-string and mapping forms of
+        `shell-exports-variable` both parse; mapping form
+        rejects unknown keys with a clear error.
+
+7. Out of scope
+================================================================
+- Procedural macros to auto-derive `FeatureBearing` (later).
+- A web/HTML interpretation (later, if ever).
+- Versioned guide variants (v1 vs v2).
+- Backwards compatibility with hand-edited Markdown guides — the
+  Markdown output is now generated.
+
+================================================================
+8. Verification
+================================================================
+- `cargo build --release` clean.
+- `./test.sh` PASS — including the four-interpretation invariants
+  in §6 and the now-mandatory documentation of the test-fixture
+  format.
+- `key audit guide` output (Detail interpretation) renders
+  visibly equivalent to the previous version, with the new
+  fixture-format section added near the existing pseudo-file
+  documentation.
+- Commit.

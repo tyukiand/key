@@ -930,6 +930,13 @@ fn predicate_to_answers_inner(pred: &FilePredicateAst, answers: &mut Vec<String>
             predicate_to_answers_inner(condition, answers);
             predicate_to_answers_inner(then, answers);
         }
+        FilePredicateAst::ShellExportsValueMatches { .. }
+        | FilePredicateAst::ShellDefinesVariableValueMatches { .. } => {
+            panic!(
+                "shell-exports/defines value-matches mapping form is not exposed via the \
+                 interactive picker; only the bare-string form is reachable from `audit add`."
+            );
+        }
     }
 }
 
@@ -1037,6 +1044,15 @@ mod tests {
     #[test]
     fn roundtrip_all_predicates() {
         for pred in all_predicate_variants() {
+            // The mapping form of shell-exports / shell-defines is parser-only;
+            // it has no menu entry, so skip its round-trip through the picker.
+            if matches!(
+                pred,
+                FilePredicateAst::ShellExportsValueMatches { .. }
+                    | FilePredicateAst::ShellDefinesVariableValueMatches { .. }
+            ) {
+                continue;
+            }
             let answers = predicate_to_answers(&pred);
             let mut answerer = CannedAnswerer::new(answers.clone());
             let rebuilt = build_predicate(&mut answerer).unwrap_or_else(|e| {
@@ -1084,7 +1100,20 @@ mod tests {
 
     #[test]
     fn menu_item_count_matches_variants() {
-        assert_eq!(predicate_menu_items().len(), all_predicate_variants().len());
+        // The two value-matches refinements (ShellExportsValueMatches /
+        // ShellDefinesVariableValueMatches) are parser-only — they have no
+        // dedicated menu entry; the picker only exposes the bare-string form.
+        let interactive_variants = all_predicate_variants()
+            .into_iter()
+            .filter(|p| {
+                !matches!(
+                    p,
+                    FilePredicateAst::ShellExportsValueMatches { .. }
+                        | FilePredicateAst::ShellDefinesVariableValueMatches { .. }
+                )
+            })
+            .count();
+        assert_eq!(predicate_menu_items().len(), interactive_variants);
         assert_eq!(
             proposition_menu_items().len(),
             all_proposition_variants().len()

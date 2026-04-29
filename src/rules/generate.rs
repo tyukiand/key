@@ -76,8 +76,26 @@ pub fn generate_predicate(pred: &FilePredicateAst) -> Value {
             mk("text-has-lines", Value::Mapping(m))
         }
         FilePredicateAst::ShellExports(var) => mk("shell-exports", Value::String(var.clone())),
+        FilePredicateAst::ShellExportsValueMatches { name, value_regex } => {
+            let mut m = Mapping::new();
+            m.insert(Value::String("name".into()), Value::String(name.clone()));
+            m.insert(
+                Value::String("value-matches".into()),
+                Value::String(value_regex.clone()),
+            );
+            mk("shell-exports", Value::Mapping(m))
+        }
         FilePredicateAst::ShellDefinesVariable(var) => {
             mk("shell-defines", Value::String(var.clone()))
+        }
+        FilePredicateAst::ShellDefinesVariableValueMatches { name, value_regex } => {
+            let mut m = Mapping::new();
+            m.insert(Value::String("name".into()), Value::String(name.clone()));
+            m.insert(
+                Value::String("value-matches".into()),
+                Value::String(value_regex.clone()),
+            );
+            mk("shell-defines", Value::Mapping(m))
         }
         FilePredicateAst::ShellAddsToPath(var) => {
             mk("shell-adds-to-path", Value::String(var.clone()))
@@ -158,11 +176,13 @@ pub fn generate_proposition(prop: &Proposition) -> Value {
     }
 }
 
+#[cfg(test)]
 pub fn generate_predicate_string(pred: &FilePredicateAst) -> String {
     let value = generate_predicate(pred);
     serde_yaml::to_string(&value).expect("failed to serialize predicate")
 }
 
+#[cfg(test)]
 pub fn generate_proposition_string(prop: &Proposition) -> String {
     let value = generate_proposition(prop);
     serde_yaml::to_string(&value).expect("failed to serialize proposition")

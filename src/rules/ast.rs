@@ -201,7 +201,15 @@ pub enum FilePredicateAst {
         max: Option<u32>,
     },
     ShellExports(String),
+    ShellExportsValueMatches {
+        name: String,
+        value_regex: String,
+    },
     ShellDefinesVariable(String),
+    ShellDefinesVariableValueMatches {
+        name: String,
+        value_regex: String,
+    },
     ShellAddsToPath(String),
     PropertiesDefinesKey(String),
     XmlMatchesPath(String),
@@ -228,7 +236,11 @@ impl FilePredicateAst {
             FilePredicateAst::TextContains(_) => "text-contains",
             FilePredicateAst::TextHasLines { .. } => "text-has-lines",
             FilePredicateAst::ShellExports(_) => "shell-exports",
+            FilePredicateAst::ShellExportsValueMatches { .. } => "shell-exports-value-matches",
             FilePredicateAst::ShellDefinesVariable(_) => "shell-defines",
+            FilePredicateAst::ShellDefinesVariableValueMatches { .. } => {
+                "shell-defines-value-matches"
+            }
             FilePredicateAst::ShellAddsToPath(_) => "shell-adds-to-path",
             FilePredicateAst::PropertiesDefinesKey(_) => "properties-defines-key",
             FilePredicateAst::XmlMatchesPath(_) => "xml-matches",
@@ -420,7 +432,9 @@ pub const PREDICATE_YAML_KEYS: &[&str] = &[
     "text-contains",
     "text-has-lines",
     "shell-exports",
+    "shell-exports-value-matches",
     "shell-defines",
+    "shell-defines-value-matches",
     "shell-adds-to-path",
     "properties-defines-key",
     "xml-matches",
@@ -454,7 +468,15 @@ pub fn all_predicate_variants() -> Vec<FilePredicateAst> {
             max: Some(100),
         },
         FilePredicateAst::ShellExports("MY_VAR".into()),
+        FilePredicateAst::ShellExportsValueMatches {
+            name: "MY_VAR".into(),
+            value_regex: r"^/usr/.*".into(),
+        },
         FilePredicateAst::ShellDefinesVariable("MY_VAR".into()),
+        FilePredicateAst::ShellDefinesVariableValueMatches {
+            name: "MY_VAR".into(),
+            value_regex: r"^/opt/.*".into(),
+        },
         FilePredicateAst::ShellAddsToPath("MY_DIR".into()),
         FilePredicateAst::PropertiesDefinesKey("my.key".into()),
         FilePredicateAst::XmlMatchesPath("root/child".into()),

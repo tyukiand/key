@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::rules::ast::{
     Control, ControlFile, DataArrayCheck, DataSchema, FailExpectation, FilePredicateAst,
     Proposition, SimplePath, TestCase, TestExpectation, TestFile, TestSuite,

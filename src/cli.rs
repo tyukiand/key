@@ -138,7 +138,12 @@ pub enum AuditCommand {
 
     /// Print a guide explaining the audit YAML syntax with examples
     #[command(name = "guide")]
-    Guide,
+    Guide {
+        /// Print the verbose guide (includes rationale, edge-case warnings,
+        /// and test-mechanics detail). Default is the terse pass.
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
 
     /// Test audit controls against a fixture directory
     #[command(name = "test")]

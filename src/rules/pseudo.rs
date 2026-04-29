@@ -84,8 +84,13 @@ pub struct PseudoSnapshot {
 
 #[derive(Debug, Clone)]
 pub enum PseudoKind {
-    Env { env_map: BTreeMap<String, String> },
-    Executable { snapshot: ExecutableSnapshot },
+    Env {
+        #[allow(dead_code)]
+        env_map: BTreeMap<String, String>,
+    },
+    Executable {
+        snapshot: ExecutableSnapshot,
+    },
 }
 
 // ---------------------------------------------------------------------------

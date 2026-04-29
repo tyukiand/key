@@ -137,6 +137,61 @@ pub fn parse_data_schema(value: &Value) -> Result<DataSchema> {
     }
 }
 
+/// Parse the value of `shell-exports` / `shell-defines`. Bare-string form
+/// preserves existing semantics; mapping form `{ name, value-matches }` adds
+/// a regex constraint on the rhs (spec/0010 §6.X.2).
+fn parse_shell_var_predicate(
+    value: &Value,
+    key: &str,
+    require_export: bool,
+) -> Result<FilePredicateAst> {
+    match value {
+        Value::String(s) => Ok(if require_export {
+            FilePredicateAst::ShellExports(s.clone())
+        } else {
+            FilePredicateAst::ShellDefinesVariable(s.clone())
+        }),
+        Value::Mapping(m) => {
+            let mut name: Option<String> = None;
+            let mut value_regex: Option<String> = None;
+            for (k, v) in m.iter() {
+                let k_str = k
+                    .as_str()
+                    .ok_or_else(|| anyhow!("{} mapping key must be a string, got {:?}", key, k))?;
+                match k_str {
+                    "name" => name = Some(require_string(v, &format!("{}.name", key))?),
+                    "value-matches" => {
+                        value_regex = Some(require_string(v, &format!("{}.value-matches", key))?)
+                    }
+                    other => bail!(
+                        "Unknown key {:?} in {} mapping. Valid keys: name, value-matches",
+                        other,
+                        key
+                    ),
+                }
+            }
+            let name =
+                name.ok_or_else(|| anyhow!("{} mapping form requires a 'name' field", key))?;
+            let value_regex = value_regex.ok_or_else(|| {
+                anyhow!(
+                    "{} mapping form requires a 'value-matches' field (use the bare-string form for existence-only)",
+                    key
+                )
+            })?;
+            Ok(if require_export {
+                FilePredicateAst::ShellExportsValueMatches { name, value_regex }
+            } else {
+                FilePredicateAst::ShellDefinesVariableValueMatches { name, value_regex }
+            })
+        }
+        _ => bail!(
+            "{} requires a string (variable name) or mapping with name + value-matches, got {:?}",
+            key,
+            value
+        ),
+    }
+}
+
 /// Parse a single key-value pair as a FilePredicateAst.
 fn parse_predicate_kv(key: &str, value: &Value) -> Result<FilePredicateAst> {
     match key {
@@ -157,14 +212,8 @@ fn parse_predicate_kv(key: &str, value: &Value) -> Result<FilePredicateAst> {
             let max = mget(m, "max").and_then(|v| v.as_u64()).map(|n| n as u32);
             Ok(FilePredicateAst::TextHasLines { min, max })
         }
-        "shell-exports" => {
-            let s = require_string(value, "shell-exports")?;
-            Ok(FilePredicateAst::ShellExports(s))
-        }
-        "shell-defines" => {
-            let s = require_string(value, "shell-defines")?;
-            Ok(FilePredicateAst::ShellDefinesVariable(s))
-        }
+        "shell-exports" => parse_shell_var_predicate(value, "shell-exports", true),
+        "shell-defines" => parse_shell_var_predicate(value, "shell-defines", false),
         "shell-adds-to-path" => {
             let s = require_string(value, "shell-adds-to-path")?;
             Ok(FilePredicateAst::ShellAddsToPath(s))
@@ -899,6 +948,89 @@ controls:
             all_test_expectation_variants().len(),
             TEST_EXPECTATION_YAML_KEYS.len()
         );
+    }
+
+    // ----- Spec/0010 §6.X.3 parser tests for shell-exports / shell-defines mapping form -----
+
+    #[test]
+    fn shell_exports_bare_string_form_parses() {
+        let pred = parse_predicate_from_str("shell-exports: PATH").unwrap();
+        assert_eq!(pred, FilePredicateAst::ShellExports("PATH".into()));
+    }
+
+    #[test]
+    fn shell_exports_mapping_form_parses() {
+        let yaml = r#"
+shell-exports:
+  name: PATH
+  value-matches: "(^|:)/usr/bin(:|$)"
+"#;
+        let pred = parse_predicate_from_str(yaml).unwrap();
+        assert_eq!(
+            pred,
+            FilePredicateAst::ShellExportsValueMatches {
+                name: "PATH".into(),
+                value_regex: "(^|:)/usr/bin(:|$)".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn shell_defines_mapping_form_parses() {
+        let yaml = r#"
+shell-defines:
+  name: MY_VAR
+  value-matches: "^/opt/.*"
+"#;
+        let pred = parse_predicate_from_str(yaml).unwrap();
+        assert_eq!(
+            pred,
+            FilePredicateAst::ShellDefinesVariableValueMatches {
+                name: "MY_VAR".into(),
+                value_regex: "^/opt/.*".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn shell_exports_mapping_unknown_key_rejected() {
+        let yaml = r#"
+shell-exports:
+  name: PATH
+  bogus-key: nope
+"#;
+        let err = parse_predicate_from_str(yaml).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("Unknown key"),
+            "error must mention 'Unknown key'; got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("bogus-key"),
+            "error must name the offending key; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn shell_exports_mapping_missing_name_rejected() {
+        let yaml = r#"
+shell-exports:
+  value-matches: "x"
+"#;
+        let err = parse_predicate_from_str(yaml).unwrap_err();
+        assert!(format!("{:#}", err).contains("name"));
+    }
+
+    #[test]
+    fn shell_exports_mapping_missing_value_matches_rejected() {
+        let yaml = r#"
+shell-exports:
+  name: PATH
+"#;
+        let err = parse_predicate_from_str(yaml).unwrap_err();
+        assert!(format!("{:#}", err).contains("value-matches"));
     }
 
     #[test]

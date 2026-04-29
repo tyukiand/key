@@ -9,7 +9,9 @@ pub mod pseudo;
 #[cfg(test)]
 mod pseudo_tests;
 pub mod queries;
+#[cfg(test)]
 pub mod scenario;
-pub mod scenario_guide;
+#[cfg(test)]
 mod scenario_integ;
+#[cfg(test)]
 mod scenario_unit;

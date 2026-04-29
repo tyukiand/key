@@ -18,7 +18,7 @@ pub fn dispatch(cmd: &AuditCommand, home_dir: &Path, fx: &dyn Effects) -> Result
         } => run_audit(file, home_dir, ignore, warn_only, fx),
         AuditCommand::New { yaml_path } => new_audit(yaml_path, fx),
         AuditCommand::Add { yaml_path } => add_control(yaml_path, fx),
-        AuditCommand::Guide => guide(fx),
+        AuditCommand::Guide { verbose } => guide(*verbose, fx),
         AuditCommand::Test {
             yaml_path,
             fake_home,
@@ -126,8 +126,13 @@ fn run_audit(
     Ok(())
 }
 
-fn guide(fx: &dyn Effects) -> Result<()> {
-    let text = crate::rules::scenario_guide::render_guide();
+fn guide(verbose: bool, fx: &dyn Effects) -> Result<()> {
+    let mode = if verbose {
+        crate::guide_edsl::text::Mode::Verbose
+    } else {
+        crate::guide_edsl::text::Mode::Terse
+    };
+    let text = crate::guide_edsl::text::render(&crate::guide_edsl::tree::root(), mode);
     fx.println(&text);
     Ok(())
 }

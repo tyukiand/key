@@ -101,23 +101,98 @@ fn env_shell_exports_var_absent_fails() {
     assert!(check_against_env(FilePredicateAst::ShellExports("FOO".into()), env).is_err());
 }
 
+/// Spec/0010 §6.X.1 + §6.X.3: the `<env>` special-case for `shell-adds-to-path`
+/// has been removed. `<env>` materializes fully-expanded values (no
+/// `export PATH="$VARNAME:$PATH"` lines), so the predicate now FAILs cleanly.
 #[test]
-fn env_shell_adds_to_path_segment_present() {
-    let mut env = BTreeMap::new();
-    env.insert(
-        "PATH".into(),
-        "/usr/bin:/opt/x/bin:/home/u/.cargo/bin".into(),
-    );
-    assert!(check_against_env(FilePredicateAst::ShellAddsToPath("/opt/x/bin".into()), env).is_ok());
-}
-
-#[test]
-fn env_shell_adds_to_path_segment_absent_fails() {
+fn env_shell_adds_to_path_now_fails_on_env() {
     let mut env = BTreeMap::new();
     env.insert("PATH".into(), "/usr/bin:/home/u/.cargo/bin".into());
-    let err =
-        check_against_env(FilePredicateAst::ShellAddsToPath("/opt/x/bin".into()), env).unwrap_err();
-    assert!(err.contains("PATH does not contain"));
+    let result = check_against_env(
+        FilePredicateAst::ShellAddsToPath("JAVA_HOME_BIN".into()),
+        env,
+    );
+    let err = result.expect_err(
+        "shell-adds-to-path should FAIL on <env>: env materializes \
+         fully-expanded values, no `export PATH=\"$VARNAME:$PATH\"` lines",
+    );
+    assert!(
+        err.contains("no line matches regex"),
+        "failure message should describe the missing export line; got: {}",
+        err
+    );
+}
+
+/// Spec/0010 §6.X.3 regression: on a real shell file, `shell-adds-to-path`
+/// keeps its existing semantics — match an `export PATH="$VARNAME:$PATH"` line.
+#[test]
+fn shell_adds_to_path_regression_on_concrete_file() {
+    use crate::rules::ast::{FilePredicateAst, Proposition, SimplePath};
+    use crate::rules::evaluate::evaluate;
+    use std::path::Path;
+    let tmp = tempfile::tempdir().unwrap();
+    let bashrc = tmp.path().join(".bashrc");
+    std::fs::write(&bashrc, "export PATH=\"$JAVA_HOME_BIN:$PATH\"\n").unwrap();
+    let prop = Proposition::FileSatisfies {
+        path: SimplePath::new("~/.bashrc").unwrap(),
+        check: FilePredicateAst::ShellAddsToPath("JAVA_HOME_BIN".into()),
+    };
+    let result = evaluate(&prop, tmp.path() as &Path);
+    assert!(
+        result.is_ok(),
+        "regression: shell-adds-to-path on a concrete file with the \
+         standard export-line should still PASS, got: {:?}",
+        result
+    );
+}
+
+/// Spec/0010 §6.X.3: `shell-exports-variable: { name: PATH, value-matches: ... }`
+/// PASSes on `<env>` iff the rhs of the export matches the regex.
+#[test]
+fn env_shell_exports_value_matches_pass() {
+    let mut env = BTreeMap::new();
+    env.insert("PATH".into(), "/usr/bin:/home/u/.cargo/bin".into());
+    let pred = FilePredicateAst::ShellExportsValueMatches {
+        name: "PATH".into(),
+        value_regex: r"(^|:)/home/u/\.cargo/bin(:|$)".into(),
+    };
+    let result = check_against_env(pred, env);
+    assert!(
+        result.is_ok(),
+        "value-matches with a matching regex should PASS, got: {:?}",
+        result
+    );
+}
+
+/// Spec/0010 §6.X.3: a non-matching regex FAILs with both regex AND rhs in
+/// the error message.
+#[test]
+fn env_shell_exports_value_matches_fail_names_regex_and_rhs() {
+    let mut env = BTreeMap::new();
+    env.insert("PATH".into(), "/usr/bin:/home/u/.cargo/bin".into());
+    let pred = FilePredicateAst::ShellExportsValueMatches {
+        name: "PATH".into(),
+        value_regex: r"^/never/matches$".into(),
+    };
+    let err = check_against_env(pred, env).unwrap_err();
+    assert!(
+        err.contains("/usr/bin:/home/u/.cargo/bin"),
+        "error must include the rhs that didn't match; got: {}",
+        err
+    );
+    assert!(
+        err.contains("/never/matches"),
+        "error must include the failing regex; got: {}",
+        err
+    );
+}
+
+/// Bare-string form still works: PATH is exported, no rhs constraint.
+#[test]
+fn env_shell_exports_path_bare_string_pass() {
+    let mut env = BTreeMap::new();
+    env.insert("PATH".into(), "/usr/bin:/home/u/.cargo/bin".into());
+    assert!(check_against_env(FilePredicateAst::ShellExports("PATH".into()), env).is_ok());
 }
 
 #[test]

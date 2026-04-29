@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod effects;
+mod guide_edsl;
 mod hash;
 mod mutation;
 mod rules;
