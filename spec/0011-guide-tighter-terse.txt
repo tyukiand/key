@@ -1,0 +1,182 @@
+Amends spec/0010-guide-edsl.txt §4.1 (terse pass) and adds a new
+filter flag. Three changes:
+
+  A. Tighten the terse pass so each ROOT Feature has AT MOST ONE
+     inline YAML example; everything else (additional examples,
+     refinement variants, predicate combinator demos, all test
+     fixtures + rationale) is `detail: true`.
+
+  B. New `--feature=<id>` flag on `key audit guide` that filters
+     to a Feature plus its descendants in the forest. Combinable
+     with `-v`.
+
+  C. Same-root invariant for collapsed detail blocks: every
+     contiguous `detail: true` subtree (collapsed into one rerun
+     line in terse) MUST contain only Features sharing one root.
+     Mixing detail-children of two different roots in one
+     collapsed block is a hard test failure. The rerun line
+     names that shared root so users can target it via
+     `--feature=<id>`.
+
+Background
+----------
+Spec 0010 shipped (commit 1fe6c18). Running `key audit guide`
+yielded a 459-line terse vs 513-line verbose — only 5 collapse
+sites, 54 lines saved. The terse pass kept every proposition and
+predicate inline because 0010's editorial guidance carved
+"canonical worked examples and AST/predicate reference" out as
+NOT detail. In practice this is too soft; the terse pass should
+be a glanceable capability list, not a full reference manual.
+This amendment tightens the policy and adds a filter so users
+can drill into one feature without reading the whole guide.
+
+================================================================
+A. Tighter terse policy
+================================================================
+
+A.1 Each ROOT Feature (a Feature with `.parent() == None`) is
+    allowed AT MOST ONE inline `ExampleControl` in the terse
+    pass. The chosen one MUST be the simplest representative —
+    typically the bare-string form of a predicate or the most
+    minimal YAML demonstrating a proposition.
+
+A.2 Every additional `ExampleControl` for the SAME root, every
+    `ExampleFixture`, every refinement variant, every predicate-
+    combinator demo, every rationale block, every edge-case
+    warning becomes `detail: true`.
+
+A.3 Specifically, all of the following MUST be `detail: true`
+    after this amendment lands (any additions are welcome):
+      - `--ignore` / `--warn-only` CLI flag detail (already
+        detail today; keep);
+      - shell-exports `value-matches` example block (already
+        detail; keep);
+      - shell-defines `value-matches` example block (already
+        detail; keep);
+      - pseudo-file caching + inapplicable-predicate semantics
+        (already detail; keep);
+      - test-fixture format blocks: env-override,
+        executable-override, malformed-fixture rationale
+        (already detail; keep);
+      - every PROPOSITION example beyond the first canonical one
+        per proposition family (e.g. of `forall` / `exists` /
+        `all` / `any` / `conditionally` keep one minimal, the
+        rest are detail);
+      - every PREDICATE example beyond the first canonical one
+        per predicate family (e.g. text-matches multi-line vs
+        single-line variants, json-matches deep-path examples,
+        xml-matches XPath nuances → detail).
+
+A.4 Target: the terse pass should land roughly in the 150-250
+    line range for the current feature set, not 459. Exact
+    number is not the goal; "user can scan the whole capability
+    surface in under a minute" is.
+
+================================================================
+B. `--feature=<id>` filter flag
+================================================================
+
+B.1 New CLI flag on `key audit guide`:
+
+      key audit guide --feature=<id>
+      key audit guide -v --feature=<id>
+
+B.2 Semantics: filter the EDSL to subtrees whose declared
+    Features (recursively, walking children) include either:
+      - the Feature whose canonical id is `<id>`, OR
+      - any DESCENDANT of that Feature in the forest (i.e. any
+        Feature whose chain of `.parent()` calls reaches `<id>`).
+
+    The chosen pass (terse / verbose, controlled by `-v`) is
+    then applied to the filtered tree. So:
+
+      key audit guide --feature=pseudo-file-env
+      # terse view of the <env> root + descendants only
+
+      key audit guide -v --feature=pseudo-file-env
+      # verbose view of the <env> root + descendants only
+
+B.3 Canonical id form: the lowercased + hyphenated variant
+    name. `Feature::PseudoFileEnv` → `pseudo-file-env`,
+    `Feature::TestFixtureEnvOverride` → `test-fixture-env-override`,
+    etc. Implement a `Feature::canonical_id(self) -> &'static str`
+    helper.
+
+B.4 Unknown `<id>` exits non-zero with a clear error AND a
+    list of valid feature ids (or at least the roots, with a
+    pointer to `--list-features` if we add one — out of scope
+    for this iteration unless cheap).
+
+B.5 Tests:
+      - `--feature=pseudo-file-env` (root) shows env + its
+        descendants (TestFixtureEnvOverride etc.) in the
+        chosen pass;
+      - `--feature=test-fixture-env-override` (descendant)
+        shows ONLY that node's content, not siblings;
+      - unknown id → non-zero exit, error message lists at
+        least the roots;
+      - combination with `-v` works on both root and
+        descendant filters.
+
+================================================================
+C. Same-root invariant for collapsed blocks
+================================================================
+
+C.1 Every contiguous `detail: true` subtree that the terse pass
+    collapses into a single rerun line MUST contain only
+    Features that share ONE root in the forest. Mixing
+    detail-children of two different roots in one collapsed
+    block is a hard test failure naming both roots and the
+    block's location in the EDSL.
+
+C.2 The rerun line emitted by the terse pass MUST name the
+    shared root in a `--feature=<id>` form so the user can
+    expand it directly:
+
+      > rerun `key audit guide -v --feature=pseudo-file-env`
+      > for more info on <env> fixture override YAML,
+      > malformed-fixture rejection rationale.
+
+    (The `--feature=<id>` portion is new in this amendment;
+    spec 0010 had only the `-v` form.)
+
+C.3 If a collapsed block's terse_summaries reference Features
+    spanning multiple roots, the implementation MUST split the
+    block into one collapsed line per root rather than emit a
+    misleading shared-root rerun line. Document this in the
+    EDSL emitter and test it.
+
+C.4 Tests:
+      - construct an EDSL fragment where two consecutive
+        detail subtrees declare features under DIFFERENT roots;
+        terse pass MUST emit two rerun lines, one per root,
+        each naming its own root id;
+      - construct one where they share a root: ONE rerun line
+        with the shared root id;
+      - assertion that EVERY rerun line in the terse output
+        names a valid `--feature=<id>` that, when used,
+        actually expands to the documented content.
+
+================================================================
+D. Out of scope
+================================================================
+- Recursive `--feature=<id>,<id>,...` multi-filter (single
+  feature only for now).
+- `--list-features` subcommand (cheap to add but not required
+  here; mention in the unknown-id error).
+- Re-evaluating which features get a "canonical" inline
+  example — the chooser stays per the implementer's
+  judgment, guided by A.1.
+- Any change to feature roster, parent map, or AST→Feature
+  mapping (those shipped in 0010 and stay).
+
+================================================================
+E. Verification
+================================================================
+- `./test.sh` PASS — including the new tests in B.5 and C.4.
+- `key audit guide` (terse) noticeably shorter than 459 lines.
+- `key audit guide -v` content unchanged (regression).
+- `key audit guide --feature=pseudo-file-env` output is a
+  proper subset of the unfiltered terse output and structurally
+  consistent.
+- Commit.

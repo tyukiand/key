@@ -1,128 +1,72 @@
-Iteration: implement spec/0010-guide-edsl.txt — the
-interpretation-polymorphic guide EDSL with Feature/parent forest,
-terse-vs-verbose passes, AST→Feature mapping, and the four
-interpretations (terse, verbose, materialized project, coverage).
+Iteration: implement spec/0011-guide-tighter-terse.txt — tighten
+the terse pass (one canonical example per root, everything else
+detail), add a `--feature=<id>` filter flag, enforce the same-root
+invariant for collapsed detail blocks, and have rerun lines name
+the shared root so users can target it.
 
-This iteration also folds in two surgical predicate fixes
-(spec §6.X) that would otherwise have to be encoded as "the way
-it is" in the new guide:
-  - drop the `<env>` special-case for `shell-adds-to-path`;
-  - add an optional `value-matches: <regex>` rhs constraint to
-    `shell-exports-variable` and `shell-defines-variable`.
-
-Authoritative spec: spec/0010-guide-edsl.txt (eight sections,
-plus §6.X for the predicate fixes). Background: spec/0005-rules
-(AST), spec/0007 (controls + audit CLI), spec/0008 (testing
-approach), spec/0009 (pseudo-files + meta-tests).
+Authoritative spec: spec/0011-guide-tighter-terse.txt (five
+sections A–E, plus background). Background: spec/0010-guide-edsl.txt
+shipped at commit 1fe6c18; everything from 0010 stays — this is
+purely an editorial-policy tightening + one new flag + one new
+invariant.
 
 Hard rules:
   - Append " (done)" to each numbered item below as it finishes,
     or " (skipped: <reason>)" if obsolete. Do not delete prior
     markers.
-  - This is the `key` project; build with cargo.
-    `./test.sh` runs the test suite (it adds `--features
-    testing` automatically — do not run bare `cargo test`).
-  - The Feature/parent forest invariant (§1.7) and the roots-
-    must-be-terse invariant (§1.8) are NON-NEGOTIABLE; if a
-    test you write would have to be skipped to land the
-    increment, fix the EDSL instead.
-  - Markdown is OUTPUT, not source. The previous src/guide.md
-    (or wherever the guide source lived) is REPLACED by EDSL.
+  - Build with cargo; `./test.sh` runs the suite (it adds
+    `--features testing` automatically).
+  - DO NOT change the Feature roster, parent map, or AST→Feature
+    mapping — those shipped in 0010 and stay.
+  - DO NOT edit spec/0010-guide-edsl.txt — increments are
+    immutable post-release.
 
-1. Define `pub enum Feature { ... }` per spec §1.2 (initial
-   roster). Place in `src/guide_edsl/features.rs`. Derive
-   `Copy + Eq + Hash + Debug`. Include the four
-   `TestFixture*` features that close the documentation hole
-   that motivated this spec. (done)
-2. Implement `Feature::parent(self) -> Option<Feature>` per
-   spec §1.6. Test-related features have their main feature
-   as parent; predicate / proposition / pseudo-file features
-   are roots; CLI subcommands are roots. (done)
-3. Add the `FeatureBearing` trait (spec §2.1) and implement
-   it for every existing AST variant (Proposition,
-   FilePredicate, ControlFile fields, pseudo-file
-   constructors). Each `features()` returns a single-element
-   slice naming the variant's canonical Feature. (done)
-4. Forest invariant test (spec §1.7): walk every Feature,
-   follow `.parent()`, assert termination at None within
-   `Feature::COUNT` steps; assert each Feature appears at
-   most once in the children-of relation. (done)
-5. Uniqueness + completeness test (spec §1.4 + §1.5): walk
-   every AST variant, aggregate `features()` into a multiset,
-   assert no duplicates AND that the resulting set equals the
-   full Feature enumeration. (done)
-6. Drop the `<env>` special-case for `shell-adds-to-path`
-   (spec §6.X.1): delete src/rules/predicates.rs:309-327's
-   `env_path_contains_segment` branch and the call site that
-   reroutes to it. `shell-adds-to-path` now has the same
-   "look for `export PATH=\"$VARNAME:$PATH\"` line" semantics
-   on every subject. On `<env>`, this just FAILs (correctly). (done)
-7. Add `value-matches: <regex>` to `shell-exports-variable`
-   and `shell-defines-variable` (spec §6.X.2). Bare-string
-   form keeps existing semantics; mapping form `{ name: ...,
-   value-matches: ... }` parses and constrains the rhs.
-   Adds two new Features
-   (`PredicateShellExportsVariableValueMatches`,
-   `PredicateShellDefinesVariableValueMatches`), each with
-   the bare-string variant as parent. (done)
-8. Tests for §6.X.3:
-     - regression: file with `export PATH="$JAVA_HOME_BIN:$PATH"`
-       → `shell-adds-to-path: JAVA_HOME_BIN` PASS;
-     - new: `<env>` with `PATH=/usr/bin:/home/u/.cargo/bin` →
-       `shell-adds-to-path: JAVA_HOME_BIN` FAILs cleanly;
-     - new: `shell-exports-variable: { name: PATH,
-       value-matches: "(^|:)/home/u/.cargo/bin(:|$)" }` PASS
-       on the same `<env>` fixture; non-matching regex FAILs
-       with both regex and rhs in the message;
-     - parser: bare-string AND mapping forms parse; unknown
-       keys in mapping form rejected with a line-numbered
-       error. (done)
-9. Define the EDSL (`src/guide_edsl/nodes.rs` or similar) per
-   spec §3. Each node carries `detail: bool` and (where
-   applicable) a `terse_summary: &'static str`. Build the
-   complete guide tree as a static `pub fn root() ->
-   GuideNode` (or const) under `src/guide_edsl/tree.rs`.
-   Migrate every section of the existing guide into the
-   tree, claiming the right Feature for each
-   `ExampleControl` / `ExampleFixture` / `FeatureRef`.
-   Mark test-mechanics nodes (fixture YAML, override
-   semantics, meta-test rationale) as `detail: true`. (done)
-10. Implement Interpretation 1 — guide text — with two
-    passes (spec §4.1):
-      a) terse pass (default): emits non-detail subtree
-         verbatim; replaces every detail subtree with a
-         single `> rerun \`key audit guide -v\` for more
-         info on <comma-separated terse_summaries>` line;
-      b) verbose pass (`-v` / `--verbose`): emits everything.
-    Both share one Markdown emitter. (done)
-11. Wire up the `key audit guide` CLI flag `-v` /
-    `--verbose`. Default behavior: terse. With flag: verbose. (done)
-12. Implement Interpretation 2 — materialized project —
-    per spec §4.2: walk the EDSL, emit a tempdir layout
-    with `controls/` from `ExampleControl` nodes,
-    `tests/fixtures/` from `ExampleFixture` nodes; per-
-    control `expect: PASS|FAIL|load-error` derives the
-    assertion. Drive end-to-end via a new test. (done)
-13. Implement Interpretation 3 — coverage — per spec
-    §4.3: walk the EDSL, collect features into a
-    `BTreeSet<Feature>`. Variants: `terse_coverage()` and
-    `full_coverage()`. (done)
-14. Implement Interpretation 4 — exhaustiveness — per spec
-    §4.4: a single test enforcing
-      a) full_coverage() == Feature::all_set(),
-      b) terse_coverage() ⊇ Feature::roots_set(),
-      c) feature in detail-only AND root → fail with a
-         clear message. (done)
-15. Migration: delete the legacy guide source (Markdown
-    file embedded via include_str!) once the EDSL emits
-    visibly equivalent terse + verbose output. Both passes
-    of `key audit guide` should produce content that mostly
-    matches the prior guide, with the new fixture-format
-    section added under the `<env>` / `<executable:NAME>`
-    parents in the verbose pass. (done)
-16. Terse-vs-Verbose consistency test (spec §6.4): the
-    sequence of section headings in the terse pass MUST
-    be a subsequence of the verbose pass. (done)
-17. Run `./test.sh` and confirm PASS. (done)
-18. Run `cargo build --release` and confirm clean. (done)
-19. git add -A && git commit -m "key: guide EDSL with Feature/parent forest, terse/-v passes, four interpretations; drop <env> special-case for shell-adds-to-path; add value-matches rhs to shell-exports-variable". (done)
+1. Add `Feature::canonical_id(self) -> &'static str` (per
+   spec §B.3). Lowercased + hyphenated variant name. Test that
+   ids are unique across all Features (parser-friendly form). (done)
+2. Sweep the EDSL tree (src/guide_edsl/tree.rs or wherever
+   the static GuideNode tree lives): for every ROOT Feature,
+   keep AT MOST ONE inline `ExampleControl` (the simplest /
+   bare-string form). Flip every other example, refinement
+   variant, and predicate-combinator demo to `detail: true`.
+   Per spec §A.3. (done)
+3. Verify quantitatively after step 2: `key audit guide` line
+   count noticeably below 459 (target ~150-250 per §A.4).
+   Document the new line count in your scratch. (done — terse: 160 lines)
+4. Implement the `--feature=<id>` CLI flag (spec §B). Filter:
+   keep only EDSL subtrees whose declared Features
+   (recursively) include either the named Feature OR any
+   descendant of it in the forest. Combinable with `-v`. (done)
+5. Implement the unknown-id error path (spec §B.4): non-zero
+   exit, error message lists at least the root feature ids. (done)
+6. Implement the same-root invariant for collapsed detail
+   blocks (spec §C.1, C.3): when the terse interpreter is
+   about to fold consecutive detail subtrees into one rerun
+   line, group them by root; emit ONE rerun line per root.
+   The previous (0010) behavior of emitting one comma-
+   separated line per contiguous run becomes per-root. (done)
+7. Update the rerun-line format to include
+   `--feature=<root-id>` so users can drill in directly
+   (spec §C.2):
+
+     > rerun `key audit guide -v --feature=pseudo-file-env`
+     > for more info on ... (done)
+
+8. Tests for §B.5:
+     - `--feature=<root>` shows root + descendants in the
+       chosen pass;
+     - `--feature=<descendant>` shows ONLY that node;
+     - unknown id → non-zero exit, error names the
+       available roots;
+     - filter combines correctly with `-v`. (done)
+9. Tests for §C.4:
+     - two-roots fixture: contiguous detail subtrees from
+       different roots → terse emits TWO rerun lines, one
+       per root;
+     - one-root fixture: ONE rerun line with shared root;
+     - every rerun line in the terse output names a valid
+       `--feature=<id>` that, when used, actually expands
+       the referenced content (round-trip). (done)
+10. Run `./test.sh` and confirm PASS. (done)
+11. Run `cargo build --release` and confirm clean. (done)
+12. git add -A && git commit -m "key: tighten guide terse pass; add --feature filter; same-root invariant for collapsed blocks".

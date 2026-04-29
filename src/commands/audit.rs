@@ -18,7 +18,7 @@ pub fn dispatch(cmd: &AuditCommand, home_dir: &Path, fx: &dyn Effects) -> Result
         } => run_audit(file, home_dir, ignore, warn_only, fx),
         AuditCommand::New { yaml_path } => new_audit(yaml_path, fx),
         AuditCommand::Add { yaml_path } => add_control(yaml_path, fx),
-        AuditCommand::Guide { verbose } => guide(*verbose, fx),
+        AuditCommand::Guide { verbose, feature } => guide(*verbose, feature.as_deref(), fx),
         AuditCommand::Test {
             yaml_path,
             fake_home,
@@ -126,13 +126,46 @@ fn run_audit(
     Ok(())
 }
 
-fn guide(verbose: bool, fx: &dyn Effects) -> Result<()> {
+fn guide(verbose: bool, feature_id: Option<&str>, fx: &dyn Effects) -> Result<()> {
+    use crate::guide_edsl::features::Feature;
     let mode = if verbose {
         crate::guide_edsl::text::Mode::Verbose
     } else {
         crate::guide_edsl::text::Mode::Terse
     };
-    let text = crate::guide_edsl::text::render(&crate::guide_edsl::tree::root(), mode);
+    let tree = crate::guide_edsl::tree::root();
+
+    let to_render = if let Some(id) = feature_id {
+        let target = Feature::from_canonical_id(id).ok_or_else(|| {
+            // Spec/0011 §B.4 — unknown id exits non-zero with a clear error
+            // listing at least the root feature ids.
+            let mut roots: Vec<&'static str> = Feature::all()
+                .iter()
+                .filter(|f| f.parent().is_none())
+                .map(|f| f.canonical_id())
+                .collect();
+            roots.sort();
+            anyhow::anyhow!(
+                "unknown --feature=<id>: {:?}\n\
+                 Valid root feature ids:\n  {}\n\
+                 (descendant ids are also accepted; pass `-v` to see the full guide.)",
+                id,
+                roots.join("\n  "),
+            )
+        })?;
+        match crate::guide_edsl::filter::filter_tree(&tree, target) {
+            Some(t) => t,
+            None => bail!(
+                "feature {:?} (id {}) had no documented content — this is a guide bug.",
+                target.name(),
+                target.canonical_id(),
+            ),
+        }
+    } else {
+        tree
+    };
+
+    let text = crate::guide_edsl::text::render(&to_render, mode);
     fx.println(&text);
     Ok(())
 }

@@ -152,6 +152,7 @@ fn propositions_section() -> GuideNode {
                 detail: false,
                 terse_summary: None,
             },
+            // Canonical inline example (spec/0011 §A.1) — simplest form.
             GuideNode::ExampleControl {
                 feature: Feature::PropositionFile,
                 expect: ExampleExpect::Pass,
@@ -159,46 +160,85 @@ fn propositions_section() -> GuideNode {
                 terse_summary: None,
                 yaml: "controls:\n  - id: FILE-EXAMPLE\n    title: ssh config exists\n    description: file proposition example\n    remediation: create the file\n    check:\n      file:\n        path: ~/.ssh/config\n        check: file-exists\n",
             },
+            // Other proposition variants — terse one-liner blurbs (root coverage),
+            // full YAML examples are detail (verbose pass / --feature filter).
+            GuideNode::FeatureRef {
+                feature: Feature::PropositionForall,
+                blurb: "`forall:` \u{2014} every file in `files:` must satisfy the inner check.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PropositionExists,
+                blurb: "`exists:` \u{2014} at least one file in `files:` must satisfy the inner check.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PropositionAll,
+                blurb: "`all:` \u{2014} every sub-proposition must hold (proposition-level conjunction).",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PropositionAny,
+                blurb: "`any:` \u{2014} at least one sub-proposition must hold (proposition-level disjunction).",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PropositionNot,
+                blurb: "`not:` \u{2014} negates the inner proposition.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PropositionConditionally,
+                blurb: "`conditionally: { if:, then: }` \u{2014} proposition-level guarded check.",
+                detail: false,
+                terse_summary: None,
+            },
+            // Detail YAML examples (verbose pass / --feature drill-in).
             GuideNode::ExampleControl {
                 feature: Feature::PropositionForall,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("forall worked example"),
                 yaml: "controls:\n  - id: FORALL-EXAMPLE\n    title: every shell rc exports JAVA_HOME\n    description: forall proposition example\n    remediation: add the export to each rc file\n    check:\n      forall:\n        files:\n          - ~/.bashrc\n          - ~/.zshrc\n        check:\n          shell-exports: JAVA_HOME\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PropositionExists,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("exists worked example"),
                 yaml: "controls:\n  - id: EXISTS-EXAMPLE\n    title: at least one rc file exports JAVA_HOME\n    description: exists proposition example\n    remediation: add the export to one rc file\n    check:\n      exists:\n        files:\n          - ~/.bash_profile\n          - ~/.profile\n          - ~/.zshrc\n        check:\n          shell-exports: JAVA_HOME\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PropositionAll,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("proposition-all worked example"),
                 yaml: "controls:\n  - id: ALL-PROP-EXAMPLE\n    title: bashrc and zshrc both exist\n    description: all-proposition example\n    remediation: create both files\n    check:\n      all:\n        - file:\n            path: ~/.bashrc\n            check: file-exists\n        - file:\n            path: ~/.zshrc\n            check: file-exists\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PropositionAny,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("proposition-any worked example"),
                 yaml: "controls:\n  - id: ANY-PROP-EXAMPLE\n    title: at least one ssh public key present\n    description: any-proposition example\n    remediation: generate at least one key\n    check:\n      any:\n        - file:\n            path: ~/.ssh/id_ed25519.pub\n            check: file-exists\n        - file:\n            path: ~/.ssh/id_rsa.pub\n            check: file-exists\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PropositionNot,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("proposition-not worked example"),
                 yaml: "controls:\n  - id: NOT-PROP-EXAMPLE\n    title: dsa key absent\n    description: negation example\n    remediation: remove the dsa key\n    check:\n      not:\n        file:\n          path: ~/.ssh/id_dsa.pub\n          check: file-exists\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PropositionConditionally,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("proposition-conditionally worked example"),
                 yaml: "controls:\n  - id: COND-PROP-EXAMPLE\n    title: if .npmrc exists, registry must be set\n    description: conditional proposition example\n    remediation: add the registry= line\n    check:\n      conditionally:\n        if:\n          file:\n            path: ~/.npmrc\n            check: file-exists\n        then:\n          file:\n            path: ~/.npmrc\n            check:\n              text-matches: \"^registry=\"\n",
             },
         ],
@@ -221,6 +261,7 @@ fn predicates_section() -> GuideNode {
                 detail: false,
                 terse_summary: None,
             },
+            // Canonical inline example (spec/0011 §A.1) — simplest form.
             GuideNode::ExampleControl {
                 feature: Feature::PredicateFileExists,
                 expect: ExampleExpect::Pass,
@@ -228,32 +269,126 @@ fn predicates_section() -> GuideNode {
                 terse_summary: None,
                 yaml: "controls:\n  - id: FILE-EXISTS-EX\n    title: file-exists predicate\n    description: simplest predicate, can appear as a bare string\n    remediation: create the file\n    check:\n      file:\n        path: ~/.ssh/config\n        check: file-exists\n",
             },
+            // Other predicate variants — terse one-liner blurbs (root coverage),
+            // full YAML examples and refinement variants are detail.
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateTextMatches,
+                blurb: "`text-matches: <regex>` \u{2014} at least one line matches the regex.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateTextContains,
+                blurb: "`text-contains: <substring>` \u{2014} literal substring (no regex escaping).",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateTextHasLines,
+                blurb: "`text-has-lines: { min:, max: }` \u{2014} line-count bounds (both optional, inclusive).",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateShellExportsVariable,
+                blurb: "`shell-exports: VAR` \u{2014} matches a line `export VAR=...`. \
+                        Mapping form `{ name:, value-matches: }` adds an rhs regex.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateShellDefinesVariable,
+                blurb: "`shell-defines: VAR` \u{2014} matches `VAR=...` with or without `export`. \
+                        Mapping form `{ name:, value-matches: }` adds an rhs regex.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateShellAddsToPath,
+                blurb: "`shell-adds-to-path: VAR` \u{2014} matches `export PATH=\"$VAR:$PATH\"`. \
+                        On `<env>` this FAILs cleanly (env values are already fully expanded).",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicatePropertiesDefinesKey,
+                blurb: "`properties-defines-key: KEY` \u{2014} line-starts-with `KEY=` in a \
+                        properties / ini-style file.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateXmlMatches,
+                blurb: "`xml-matches: <element/path>` \u{2014} slash-separated element path; \
+                        no attributes or wildcards.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateJsonMatches,
+                blurb: "`json-matches: <schema>` \u{2014} validate a JSON file against a typed schema.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateYamlMatches,
+                blurb: "`yaml-matches: <schema>` \u{2014} same data schema as json-matches, applied to YAML files.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateAnd,
+                blurb: "`all: [<sub-check>, ...]` \u{2014} predicate-level conjunction.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateOr,
+                blurb: "`any: { hint:, checks: [...] }` \u{2014} predicate-level disjunction with optional hint.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateNot,
+                blurb: "`not: <sub-check>` \u{2014} predicate-level negation.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PredicateConditionally,
+                blurb: "`conditionally: { if:, then: }` \u{2014} predicate-level guarded check.",
+                detail: false,
+                terse_summary: None,
+            },
+            // Detail YAML examples (verbose pass / --feature drill-in).
+            // Adjacent same-root variants (e.g. shell-exports + shell-exports-value-matches)
+            // collapse into a single rerun line per spec/0011 §C.
             GuideNode::ExampleControl {
                 feature: Feature::PredicateTextMatches,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("text-matches worked example"),
                 yaml: "controls:\n  - id: TEXT-MATCHES-EX\n    title: text-matches predicate\n    description: at least one line matches the regex\n    remediation: add a matching line\n    check:\n      file:\n        path: ~/.bashrc\n        check:\n          text-matches: \"^source ~/\\\\.env\"\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateTextContains,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("text-contains worked example"),
                 yaml: "controls:\n  - id: TEXT-CONTAINS-EX\n    title: text-contains predicate\n    description: literal substring (no regex escaping needed)\n    remediation: add the substring\n    check:\n      file:\n        path: ~/.npmrc\n        check:\n          text-contains: \"artifactory.mycompany.com\"\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateTextHasLines,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("text-has-lines worked example"),
                 yaml: "controls:\n  - id: TEXT-HAS-LINES-EX\n    title: text-has-lines predicate\n    description: line-count bounds (both optional, inclusive)\n    remediation: adjust the file length\n    check:\n      file:\n        path: ~/.ssh/authorized_keys\n        check:\n          text-has-lines:\n            min: 1\n            max: 50\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateShellExportsVariable,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("shell-exports bare-string worked example"),
                 yaml: "controls:\n  - id: SHELL-EXPORTS-EX\n    title: shell-exports (bare-string form)\n    description: matches a line `export VAR=...`\n    remediation: add the export\n    check:\n      file:\n        path: ~/.bashrc\n        check:\n          shell-exports: JAVA_HOME\n",
             },
             GuideNode::ExampleControl {
@@ -266,8 +401,8 @@ fn predicates_section() -> GuideNode {
             GuideNode::ExampleControl {
                 feature: Feature::PredicateShellDefinesVariable,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("shell-defines bare-string worked example"),
                 yaml: "controls:\n  - id: SHELL-DEFINES-EX\n    title: shell-defines (bare-string form)\n    description: matches `VAR=...` with or without the `export` keyword\n    remediation: add the assignment\n    check:\n      file:\n        path: ~/.bashrc\n        check:\n          shell-defines: MY_VAR\n",
             },
             GuideNode::ExampleControl {
@@ -280,64 +415,64 @@ fn predicates_section() -> GuideNode {
             GuideNode::ExampleControl {
                 feature: Feature::PredicateShellAddsToPath,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("shell-adds-to-path worked example"),
                 yaml: "controls:\n  - id: SHELL-ADDS-PATH-EX\n    title: shell-adds-to-path predicate\n    description: matches `export PATH=\"$VAR:$PATH\"`. On `<env>` this FAILs cleanly because env materializes fully-expanded values.\n    remediation: add the export PATH line in your rc file\n    check:\n      file:\n        path: ~/.bashrc\n        check:\n          shell-adds-to-path: JAVA_HOME_BIN\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicatePropertiesDefinesKey,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("properties-defines-key worked example"),
                 yaml: "controls:\n  - id: PROPS-EX\n    title: properties-defines-key predicate\n    description: line-starts-with `key=` in a properties / ini-style file\n    remediation: add the property\n    check:\n      file:\n        path: ~/.gradle/gradle.properties\n        check:\n          properties-defines-key: signing.keyId\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateXmlMatches,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("xml-matches worked example"),
                 yaml: "controls:\n  - id: XML-EX\n    title: xml-matches predicate\n    description: slash-separated element path; no attributes or wildcards\n    remediation: add the element\n    check:\n      file:\n        path: ~/.m2/settings.xml\n        check:\n          xml-matches: settings/servers/server/id\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateJsonMatches,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("json-matches worked example"),
                 yaml: "controls:\n  - id: JSON-EX\n    title: json-matches predicate\n    description: validate a JSON file against a typed schema\n    remediation: align the file shape to the schema\n    check:\n      file:\n        path: ~/.config/app.json\n        check:\n          json-matches:\n            is-object:\n              settings:\n                is-object:\n                  theme: is-string\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateYamlMatches,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("yaml-matches worked example"),
                 yaml: "controls:\n  - id: YAML-EX\n    title: yaml-matches predicate\n    description: same data schema as json-matches, applied to YAML files\n    remediation: align the file shape to the schema\n    check:\n      file:\n        path: ~/.config/models.yaml\n        check:\n          yaml-matches:\n            is-object:\n              models:\n                is-array:\n                  forall:\n                    is-object:\n                      name: is-string\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateAnd,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("predicate-and worked example"),
                 yaml: "controls:\n  - id: PRED-ALL-EX\n    title: predicate-level all\n    description: every sub-check must hold\n    remediation: ensure both checks pass\n    check:\n      file:\n        path: ~/.bashrc\n        check:\n          all:\n            - file-exists\n            - shell-exports: JAVA_HOME\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateOr,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("predicate-or worked example"),
                 yaml: "controls:\n  - id: PRED-ANY-EX\n    title: predicate-level any\n    description: at least one alternative must hold; hint shown on failure\n    remediation: configure one of the alternatives\n    check:\n      file:\n        path: ~/.bashrc\n        check:\n          any:\n            hint: configure Java (export or assign)\n            checks:\n              - shell-exports: JAVA_HOME\n              - shell-defines: JAVA_HOME\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateNot,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("predicate-not worked example"),
                 yaml: "controls:\n  - id: PRED-NOT-EX\n    title: predicate-level not\n    description: passes when the inner check fails\n    remediation: ensure the prohibited line is absent\n    check:\n      file:\n        path: ~/.env.local\n        check:\n          not:\n            text-matches: \"(?i)password\"\n",
             },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateConditionally,
                 expect: ExampleExpect::Pass,
-                detail: false,
-                terse_summary: None,
+                detail: true,
+                terse_summary: Some("predicate-conditionally worked example"),
                 yaml: "controls:\n  - id: PRED-COND-EX\n    title: predicate-level conditionally\n    description: if condition holds, then inner must hold\n    remediation: satisfy the conditional\n    check:\n      file:\n        path: ~/.npmrc\n        check:\n          conditionally:\n            if: file-exists\n            then:\n              text-matches: \"^registry=\"\n",
             },
         ],
@@ -377,14 +512,25 @@ fn pseudo_files_section() -> GuideNode {
                 terse_summary: None,
                 yaml: "controls:\n  - id: EXEC-EX\n    title: \"<executable:NAME> pseudo-file\"\n    description: \"snapshot of an executable resolved on PATH; use file-exists for presence or json-matches for shape.\"\n    remediation: install the executable\n    check:\n      file:\n        path: \"<executable:docker>\"\n        check: file-exists\n",
             },
-            GuideNode::Prose {
-                text: "Pseudo-files are read-only and cached for the duration of a \
-                       single `key audit run` invocation. Inapplicable predicates \
-                       (e.g. `xml-matches` on `<env>`, `shell-exports` on \
-                       `<executable:NAME>`) fail explicitly with a message naming \
-                       both the predicate and the pseudo-file.",
+            // Detail caveats — split per-root so the §C same-root invariant
+            // can attribute each rerun line to a single `--feature=<id>`.
+            GuideNode::FeatureRef {
+                feature: Feature::PseudoFileEnv,
+                blurb: "`<env>` is read-only and cached for the duration of a single \
+                        `key audit run` invocation. Inapplicable predicates (e.g. \
+                        `xml-matches` on `<env>`) fail explicitly with a message naming \
+                        both the predicate and the pseudo-file.",
                 detail: true,
-                terse_summary: Some("pseudo-file caching + inapplicable-predicate semantics"),
+                terse_summary: Some("<env> caching + inapplicable-predicate semantics"),
+            },
+            GuideNode::FeatureRef {
+                feature: Feature::PseudoFileExecutable,
+                blurb: "`<executable:NAME>` is read-only and cached for the duration of a \
+                        single `key audit run` invocation. Inapplicable predicates (e.g. \
+                        `shell-exports` on `<executable:NAME>`) fail explicitly with a \
+                        message naming both the predicate and the pseudo-file.",
+                detail: true,
+                terse_summary: Some("<executable:NAME> caching + inapplicable-predicate semantics"),
             },
         ],
     }

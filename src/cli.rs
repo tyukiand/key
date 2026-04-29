@@ -143,6 +143,11 @@ pub enum AuditCommand {
         /// and test-mechanics detail). Default is the terse pass.
         #[arg(short = 'v', long = "verbose")]
         verbose: bool,
+
+        /// Filter to a Feature subtree by canonical id (e.g.
+        /// `pseudo-file-env`). Combinable with `-v`.
+        #[arg(long = "feature")]
+        feature: Option<String>,
     },
 
     /// Test audit controls against a fixture directory

@@ -205,6 +205,89 @@ impl Feature {
         }
     }
 
+    /// Canonical machine-friendly id used by `--feature=<id>` (spec/0011 §B.3):
+    /// the variant identifier converted to lowercased + hyphenated form.
+    pub fn canonical_id(self) -> &'static str {
+        use Feature::*;
+        match self {
+            PropositionFile => "proposition-file",
+            PropositionForall => "proposition-forall",
+            PropositionExists => "proposition-exists",
+            PropositionAll => "proposition-all",
+            PropositionAny => "proposition-any",
+            PropositionNot => "proposition-not",
+            PropositionConditionally => "proposition-conditionally",
+            PredicateFileExists => "predicate-file-exists",
+            PredicateTextHasLines => "predicate-text-has-lines",
+            PredicateTextMatches => "predicate-text-matches",
+            PredicateTextContains => "predicate-text-contains",
+            PredicateShellExportsVariable => "predicate-shell-exports-variable",
+            PredicateShellDefinesVariable => "predicate-shell-defines-variable",
+            PredicateShellAddsToPath => "predicate-shell-adds-to-path",
+            PredicatePropertiesDefinesKey => "predicate-properties-defines-key",
+            PredicateXmlMatches => "predicate-xml-matches",
+            PredicateJsonMatches => "predicate-json-matches",
+            PredicateYamlMatches => "predicate-yaml-matches",
+            PredicateAnd => "predicate-and",
+            PredicateOr => "predicate-or",
+            PredicateNot => "predicate-not",
+            PredicateConditionally => "predicate-conditionally",
+            PredicateShellExportsVariableValueMatches => {
+                "predicate-shell-exports-variable-value-matches"
+            }
+            PredicateShellDefinesVariableValueMatches => {
+                "predicate-shell-defines-variable-value-matches"
+            }
+            PseudoFileEnv => "pseudo-file-env",
+            PseudoFileExecutable => "pseudo-file-executable",
+            ControlFile => "control-file",
+            ControlIdField => "control-id-field",
+            ControlTitleField => "control-title-field",
+            ControlDescriptionField => "control-description-field",
+            ControlRemediationField => "control-remediation-field",
+            TestFixtureFormat => "test-fixture-format",
+            TestFixtureEnvOverride => "test-fixture-env-override",
+            TestFixtureExecutableOverride => "test-fixture-executable-override",
+            TestFixtureMalformedRejection => "test-fixture-malformed-rejection",
+            CliAuditRun => "cli-audit-run",
+            CliAuditNew => "cli-audit-new",
+            CliAuditAdd => "cli-audit-add",
+            CliAuditList => "cli-audit-list",
+            CliAuditDelete => "cli-audit-delete",
+            CliAuditGuide => "cli-audit-guide",
+            CliAuditTest => "cli-audit-test",
+            CliAuditIgnoreFlag => "cli-audit-ignore-flag",
+            CliAuditWarnOnlyFlag => "cli-audit-warn-only-flag",
+        }
+    }
+
+    /// Look up a feature by its canonical id (`Feature::canonical_id`).
+    pub fn from_canonical_id(s: &str) -> Option<Feature> {
+        Self::all().iter().copied().find(|f| f.canonical_id() == s)
+    }
+
+    /// Walk to the root of this feature's tree (Feature where `.parent() == None`).
+    pub fn root(self) -> Feature {
+        let mut current = self;
+        while let Some(p) = current.parent() {
+            current = p;
+        }
+        current
+    }
+
+    /// True iff `self == ancestor` or any chain of `.parent()` calls from
+    /// `self` reaches `ancestor`.
+    pub fn is_descendant_of(self, ancestor: Feature) -> bool {
+        let mut current = Some(self);
+        while let Some(c) = current {
+            if c == ancestor {
+                return true;
+            }
+            current = c.parent();
+        }
+        false
+    }
+
     /// Set of every feature.
     pub fn all_set() -> BTreeSet<Feature> {
         Self::all().iter().copied().collect()
@@ -284,5 +367,66 @@ mod tests {
             Feature::all().len(),
             "Feature::name() must be injective"
         );
+    }
+
+    /// Spec/0011 §B.3 — canonical_id must be unique across all Features and
+    /// match a parser-friendly lowercase + hyphen form (no spaces, no
+    /// underscores, no uppercase).
+    #[test]
+    fn canonical_id_unique_and_well_formed() {
+        let ids: BTreeSet<&str> = Feature::all().iter().map(|f| f.canonical_id()).collect();
+        assert_eq!(
+            ids.len(),
+            Feature::all().len(),
+            "Feature::canonical_id() must be injective"
+        );
+        for f in Feature::all() {
+            let id = f.canonical_id();
+            assert!(!id.is_empty(), "{} has empty canonical_id", f.name());
+            for c in id.chars() {
+                assert!(
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-',
+                    "canonical_id {:?} for {} contains invalid char {:?}",
+                    id,
+                    f.name(),
+                    c,
+                );
+            }
+            assert!(
+                !id.starts_with('-') && !id.ends_with('-'),
+                "canonical_id {:?} starts/ends with hyphen",
+                id
+            );
+        }
+    }
+
+    /// Round-trip: `from_canonical_id` finds every feature via its id.
+    #[test]
+    fn canonical_id_round_trip() {
+        for f in Feature::all() {
+            let got = Feature::from_canonical_id(f.canonical_id());
+            assert_eq!(got, Some(*f), "round-trip failed for {}", f.name());
+        }
+        assert_eq!(Feature::from_canonical_id("not-a-feature"), None);
+    }
+
+    /// Walking `.root()` always reaches a Feature with no parent, in <= COUNT hops.
+    #[test]
+    fn root_walks_to_a_root() {
+        for f in Feature::all() {
+            let r = f.root();
+            assert!(
+                r.parent().is_none(),
+                "{} root {} has parent",
+                f.name(),
+                r.name()
+            );
+            assert!(
+                f.is_descendant_of(r),
+                "{} should be descendant of its root {}",
+                f.name(),
+                r.name()
+            );
+        }
     }
 }
