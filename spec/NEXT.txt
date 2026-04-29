@@ -1,25 +1,7 @@
-Iteration: implement spec/0011-guide-tighter-terse.txt — tighten
-the terse pass (one canonical example per root, everything else
-detail), add a `--feature=<id>` filter flag, enforce the same-root
-invariant for collapsed detail blocks, and have rerun lines name
-the shared root so users can target it.
+No outstanding work.
 
-Authoritative spec: spec/0011-guide-tighter-terse.txt (five
-sections A–E, plus background). Background: spec/0010-guide-edsl.txt
-shipped at commit 1fe6c18; everything from 0010 stays — this is
-purely an editorial-policy tightening + one new flag + one new
-invariant.
-
-Hard rules:
-  - Append " (done)" to each numbered item below as it finishes,
-    or " (skipped: <reason>)" if obsolete. Do not delete prior
-    markers.
-  - Build with cargo; `./test.sh` runs the suite (it adds
-    `--features testing` automatically).
-  - DO NOT change the Feature roster, parent map, or AST→Feature
-    mapping — those shipped in 0010 and stay.
-  - DO NOT edit spec/0010-guide-edsl.txt — increments are
-    immutable post-release.
+(spec/0011-guide-tighter-terse.txt landed in commit 7b3c3a6;
+all numbered items below marked done.)
 
 1. Add `Feature::canonical_id(self) -> &'static str` (per
    spec §B.3). Lowercased + hyphenated variant name. Test that
@@ -69,4 +51,4 @@ Hard rules:
        the referenced content (round-trip). (done)
 10. Run `./test.sh` and confirm PASS. (done)
 11. Run `cargo build --release` and confirm clean. (done)
-12. git add -A && git commit -m "key: tighten guide terse pass; add --feature filter; same-root invariant for collapsed blocks".
+12. git add -A && git commit -m "key: tighten guide terse pass; add --feature filter; same-root invariant for collapsed blocks". (done)
