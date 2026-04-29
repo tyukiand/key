@@ -319,8 +319,8 @@ mod tests {
         assert!(terse.contains("ENV-EX"), "missing root example: {}", terse);
         // The descendant (TestFixtureEnvOverride) is referenced (pointer line).
         assert!(
-            terse.contains("--feature=pseudo-file-env"),
-            "expected a rerun line drilled to pseudo-file-env in terse-of-filter; got:\n{}",
+            terse.contains("--feature=env"),
+            "expected a rerun line drilled to env in terse-of-filter; got:\n{}",
             terse
         );
         // The unrelated PseudoFileExecutable example is NOT present.
@@ -390,11 +390,11 @@ mod tests {
         assert!(!roots.is_empty(), "must have at least one root feature");
         // Sanity: every well-known root id is in the list.
         for known in [
-            "pseudo-file-env",
-            "pseudo-file-executable",
+            "env",
+            "executable",
             "control-file",
-            "test-fixture-format",
-            "cli-audit-run",
+            "test-fixture",
+            "audit-run",
         ] {
             assert!(
                 roots.contains(&known),
@@ -438,8 +438,8 @@ mod tests {
             "expected one rerun line per root (2); got {}: {}",
             n_rerun, terse
         );
-        assert!(terse.contains("--feature=proposition-forall"));
-        assert!(terse.contains("--feature=predicate-text-matches"));
+        assert!(terse.contains("--feature=forall"));
+        assert!(terse.contains("--feature=text-matches"));
     }
 
     /// Spec/0011 §C.4(b) — two consecutive detail subtrees sharing one root
@@ -472,9 +472,9 @@ mod tests {
         assert!(terse.contains("shell-exports bare summary"));
         assert!(terse.contains("shell-exports value-matches summary"));
         // Root id is the shared parent (PredicateShellExportsVariable).
-        assert!(terse.contains("--feature=predicate-shell-exports-variable"));
+        assert!(terse.contains("--feature=shell-exports"));
         // The descendant id does NOT appear (the root's id is the canonical anchor).
-        assert!(!terse.contains("--feature=predicate-shell-exports-variable-value-matches"));
+        assert!(!terse.contains("--feature=shell-exports-value-matches"));
     }
 
     /// Spec/0011 §C.4(c) — every rerun line in the production terse output

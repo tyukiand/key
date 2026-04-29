@@ -1,0 +1,167 @@
+Re-evaluate `Feature::canonical_id` so the strings users type
+(into `--feature=<id>` and Google) are the natural names they
+would actually search for, instead of the Rust enum variant
+flattened mechanically.
+
+Background
+----------
+Spec 0011 §B.3 specified `canonical_id` as the lowercased +
+hyphenated variant name. That gave us strings like
+`pseudo-file-env`, `pseudo-file-executable`,
+`proposition-forall`, `predicate-shell-exports-variable`. Those
+work, but a user trying to remember what to type — or worse,
+googling for help — will reach for `env`, `executable`,
+`forall`, `shell-exports`, not the categorical-prefix form.
+The categorical prefixes leak the AST module structure into the
+user-facing surface for no benefit.
+
+This increment renames the canonical ids while keeping the Rust
+variant names (which legitimately want to be precise and
+unambiguous in code).
+
+================================================================
+1. Renaming policy
+================================================================
+
+1.1 The user-facing `canonical_id` for each Feature is
+    HAND-CHOSEN to be the shortest natural search term.
+    Examples (illustrative — implementer may tune any specific
+    case if a clearly better short name exists):
+
+      Feature::PseudoFileEnv                          → env
+      Feature::PseudoFileExecutable                   → executable
+      Feature::PropositionFile                        → file
+      Feature::PropositionForall                      → forall
+      Feature::PropositionExists                      → exists
+      Feature::PropositionAll                         → all-prop
+      Feature::PropositionAny                         → any-prop
+      Feature::PropositionConditionally               → conditionally-prop
+      Feature::PropositionNot                         → not-prop
+      Feature::PredicateFileExists                    → file-exists
+      Feature::PredicateTextHasLines                  → text-has-lines
+      Feature::PredicateTextMatches                   → text-matches
+      Feature::PredicateTextContains                  → text-contains
+      Feature::PredicateShellExportsVariable          → shell-exports
+      Feature::PredicateShellDefinesVariable          → shell-defines
+      Feature::PredicateShellAddsToPath               → shell-adds-to-path
+      Feature::PredicatePropertiesDefinesKey          → properties-defines-key
+      Feature::PredicateXmlMatches                    → xml-matches
+      Feature::PredicateJsonMatches                   → json-matches
+      Feature::PredicateYamlMatches                   → yaml-matches
+      Feature::PredicateAnd                           → and
+      Feature::PredicateOr                            → or
+      Feature::PredicateNot                           → not
+      Feature::PredicateConditionally                 → conditionally
+      Feature::PredicateShellExportsVariableValueMatches → shell-exports-value-matches
+      Feature::PredicateShellDefinesVariableValueMatches → shell-defines-value-matches
+      Feature::ControlFile                            → control-file
+      Feature::ControlIdField                         → control-id
+      Feature::ControlTitleField                      → control-title
+      Feature::ControlDescriptionField                → control-description
+      Feature::ControlRemediationField                → control-remediation
+      Feature::TestFixtureFormat                      → test-fixture
+      Feature::TestFixtureEnvOverride                 → env-override
+      Feature::TestFixtureExecutableOverride          → executable-override
+      Feature::TestFixtureMalformedRejection          → fixture-malformed-rejection
+      Feature::CliAuditRun                            → audit-run
+      Feature::CliAuditNew                            → audit-new
+      Feature::CliAuditAdd                            → audit-add
+      Feature::CliAuditList                           → audit-list
+      Feature::CliAuditDelete                         → audit-delete
+      Feature::CliAuditGuide                          → audit-guide
+      Feature::CliAuditTest                           → audit-test
+      Feature::CliAuditIgnoreFlag                     → ignore-flag
+      Feature::CliAuditWarnOnlyFlag                   → warn-only-flag
+
+1.2 Disambiguation rule. Where two Features would share a
+    bare name (notably `all` / `any` / `not` /
+    `conditionally`, which appear at BOTH the Proposition and
+    the Predicate level), the predicate-level ones keep the
+    short bare name (because that's what users actually type
+    inside `check:` blocks), and the proposition-level ones
+    get an `-prop` suffix. Rationale: predicate combinators
+    are the more frequently typed surface; they earn the
+    short id.
+
+1.3 Uniqueness invariant. `canonical_id` MUST be unique across
+    all Features. The existing test from spec 0011 step 1 is
+    extended to assert this.
+
+================================================================
+2. Implementation
+================================================================
+
+2.1 Replace the auto-derived (variant-name → kebab-case)
+    implementation of `Feature::canonical_id` with a hand-
+    written match arm per variant returning the chosen string
+    literal. Single source of truth.
+
+2.2 Update every test fixture, every guide rerun-line example,
+    every `--feature=<id>` reference in tests, every doc
+    comment that named a feature id by its old form.
+
+2.3 Fixture migration: search for `pseudo-file-env`,
+    `pseudo-file-executable`, `proposition-forall`,
+    `predicate-shell-...`, `cli-audit-...` literal strings
+    across the codebase (tests + guide EDSL); replace each
+    with the new id per §1.1.
+
+================================================================
+3. Backwards compatibility
+================================================================
+
+3.1 No backwards-compat aliasing. The old ids were live for
+    one tagged release (v2.8.0); removing them is fine. If a
+    user typed `--feature=pseudo-file-env`, the unknown-id
+    error path (spec 0011 §B.4) lists the new valid ids. The
+    list now includes a hint:
+
+      "did you mean: env?"
+
+    when the typed id has a suffix-strip match against a known
+    id (i.e. `pseudo-file-env`'s suffix `env` matches; same
+    for `predicate-foo` → `foo`). Implement this as a simple
+    string post-fix match; no fuzzy-matching crate.
+
+================================================================
+4. Tests
+================================================================
+
+4.1 Uniqueness of `canonical_id` across all Features (§1.3).
+
+4.2 Each renamed id is reachable via `--feature=<id>` and
+    expands to the same content the old id used to expand to
+    (functional regression).
+
+4.3 `--feature=pseudo-file-env` (the OLD id) → unknown-id
+    error AND the error message contains the suggestion
+    `did you mean: env?`. Same for one or two other typical
+    old ids (`predicate-shell-exports-variable` →
+    `shell-exports`, `proposition-forall` → `forall`).
+
+4.4 The terse output's rerun lines (spec 0011 §C.2) all use
+    the new short ids:
+
+      > rerun `key audit guide -v --feature=env` for more
+      > info on env-override, fixture-malformed-rejection.
+
+================================================================
+5. Out of scope
+================================================================
+- Feature roster changes (none — this is purely an id rename).
+- Feature parent-map changes (none).
+- AST changes (none).
+- Adding aliases / multi-id-per-Feature (not needed; one good
+  id per Feature is the goal).
+
+================================================================
+6. Verification
+================================================================
+- `./test.sh` PASS — including the new uniqueness, regression,
+  and did-you-mean tests.
+- `key audit guide` terse and verbose outputs render the new
+  ids in every rerun line.
+- `key audit guide --feature=env` works and prints the env
+  pseudo-file content.
+- Commit; release tag is the receptionist's call after this
+  lands.

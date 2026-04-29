@@ -126,6 +126,44 @@ fn run_audit(
     Ok(())
 }
 
+/// Spec/0012 §3.1 — when a typed id is unknown, propose a short canonical id
+/// reachable by stripping a `-`-separated prefix and/or suffix. The prior
+/// spec text says "suffix"; the §4.3 test cases (`predicate-shell-exports-
+/// variable` → `shell-exports`) require trimming from both ends, so we walk
+/// every contiguous `-`-separated subsequence and pick the longest known
+/// match (ties broken by preferring the rightmost match — this keeps the
+/// leaf-most term, e.g. `pseudo-file-env` → `env`, not `file`). No
+/// fuzzy-matching crate.
+fn suggest_canonical_id(typed: &str) -> Option<&'static str> {
+    use crate::guide_edsl::features::Feature;
+    let known: std::collections::BTreeSet<&'static str> =
+        Feature::all().iter().map(|f| f.canonical_id()).collect();
+
+    let segments: Vec<&str> = typed.split('-').collect();
+    let n = segments.len();
+    let mut best: Option<(usize, usize, &'static str)> = None; // (length, end-index, id)
+    for start in 0..n {
+        for end in (start + 1)..=n {
+            // Skip the full original id — only proper subsequences count.
+            if start == 0 && end == n {
+                continue;
+            }
+            let candidate = segments[start..end].join("-");
+            if let Some(id) = known.get(candidate.as_str()) {
+                let length = end - start;
+                let better = match best {
+                    None => true,
+                    Some((bl, be, _)) => length > bl || (length == bl && end > be),
+                };
+                if better {
+                    best = Some((length, end, *id));
+                }
+            }
+        }
+    }
+    best.map(|(_, _, id)| id)
+}
+
 fn guide(verbose: bool, feature_id: Option<&str>, fx: &dyn Effects) -> Result<()> {
     use crate::guide_edsl::features::Feature;
     let mode = if verbose {
@@ -145,11 +183,22 @@ fn guide(verbose: bool, feature_id: Option<&str>, fx: &dyn Effects) -> Result<()
                 .map(|f| f.canonical_id())
                 .collect();
             roots.sort();
+            // Spec/0012 §3.1 — did-you-mean: if the typed id has a known
+            // canonical id as a suffix after stripping a `-`-separated prefix
+            // (e.g. `pseudo-file-env` → strip `pseudo-file-` → suffix `env`
+            // matches), suggest the matched short id. No fuzzy-matching crate.
+            let hint = suggest_canonical_id(id);
+            let hint_line = match hint {
+                Some(s) => format!("did you mean: {}?\n", s),
+                None => String::new(),
+            };
             anyhow::anyhow!(
                 "unknown --feature=<id>: {:?}\n\
+                 {}\
                  Valid root feature ids:\n  {}\n\
                  (descendant ids are also accepted; pass `-v` to see the full guide.)",
                 id,
+                hint_line,
                 roots.join("\n  "),
             )
         })?;
@@ -654,4 +703,133 @@ pub fn project_run(project_dir: &Path, home_dir: &Path, fx: &dyn Effects) -> Res
     let main_yaml = find_main_yaml(project_dir)?;
     let yaml_str = main_yaml.to_string_lossy().to_string();
     run_audit(&yaml_str, home_dir, &[], &[], fx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::guide_edsl::features::Feature;
+
+    /// Spec/0012 §3.1 / §4.3 — did-you-mean: stripped-prefix-and-suffix
+    /// substring of the typed id matches a known short canonical id.
+    #[test]
+    fn did_you_mean_for_old_ids() {
+        assert_eq!(suggest_canonical_id("pseudo-file-env"), Some("env"));
+        assert_eq!(
+            suggest_canonical_id("pseudo-file-executable"),
+            Some("executable")
+        );
+        assert_eq!(suggest_canonical_id("proposition-forall"), Some("forall"));
+        assert_eq!(
+            suggest_canonical_id("predicate-shell-exports-variable"),
+            Some("shell-exports"),
+        );
+        assert_eq!(
+            suggest_canonical_id("predicate-shell-defines-variable"),
+            Some("shell-defines"),
+        );
+        assert_eq!(suggest_canonical_id("cli-audit-run"), Some("audit-run"));
+        assert_eq!(
+            suggest_canonical_id("test-fixture-env-override"),
+            Some("env-override")
+        );
+    }
+
+    /// Spec/0012 §3.1 — unrelated typo / no `-`-separated subsequence
+    /// match → no hint.
+    #[test]
+    fn did_you_mean_returns_none_for_unrelated() {
+        assert_eq!(suggest_canonical_id("totally-bogus"), None);
+        assert_eq!(suggest_canonical_id("xyz"), None);
+        // The full id is excluded (we only suggest a *different* short id).
+        assert_eq!(suggest_canonical_id("env"), None);
+    }
+
+    /// Spec/0012 §4.3 — the unknown-id error path itself emits the hint.
+    /// We exercise this via the `guide()` function with a fake Effects.
+    #[test]
+    fn unknown_feature_id_error_contains_hint() {
+        use crate::effects::CannedEffects;
+        let fx = CannedEffects::new();
+        let err = guide(false, Some("pseudo-file-env"), &fx).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("did you mean: env?"),
+            "expected did-you-mean hint, got:\n{}",
+            msg
+        );
+    }
+
+    /// Spec/0012 §4.3 — `predicate-shell-exports-variable` and
+    /// `proposition-forall` also produce hints.
+    #[test]
+    fn unknown_feature_id_error_contains_hint_for_other_old_ids() {
+        use crate::effects::CannedEffects;
+        let fx = CannedEffects::new();
+
+        let err = guide(false, Some("predicate-shell-exports-variable"), &fx).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("did you mean: shell-exports?"),
+            "expected hint shell-exports, got:\n{}",
+            msg
+        );
+
+        let err = guide(false, Some("proposition-forall"), &fx).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("did you mean: forall?"),
+            "expected hint forall, got:\n{}",
+            msg
+        );
+    }
+
+    /// Spec/0012 §4.2 — every renamed id is reachable via `--feature=<id>`
+    /// and produces non-trivial output (functional regression). Combined
+    /// with the round-trip test in features.rs, this confirms the rename
+    /// did not break the filter pipeline.
+    #[test]
+    fn every_new_id_is_reachable_via_feature_flag() {
+        use crate::effects::CannedEffects;
+        for f in Feature::all() {
+            let fx = CannedEffects::new();
+            guide(false, Some(f.canonical_id()), &fx)
+                .unwrap_or_else(|e| panic!("--feature={} failed: {:#}", f.canonical_id(), e));
+            // Some output was emitted (terse drilled-in tree is non-empty).
+            assert!(
+                !fx.output_lines().is_empty(),
+                "--feature={} produced no output",
+                f.canonical_id(),
+            );
+        }
+    }
+
+    /// Spec/0012 §4.4 — terse rerun lines now contain the new short ids,
+    /// not the old `category-prefix-name` form.
+    #[test]
+    fn terse_rerun_lines_use_new_short_ids() {
+        let r = crate::guide_edsl::tree::root();
+        let terse = crate::guide_edsl::text::render(&r, crate::guide_edsl::text::Mode::Terse);
+        // New ids are present in some rerun line.
+        assert!(
+            terse.contains("--feature=env"),
+            "expected --feature=env in terse output:\n{}",
+            terse
+        );
+        // No old `pseudo-file-` / `predicate-shell-` / `cli-audit-` ids leak.
+        for stale in &[
+            "--feature=pseudo-file-env",
+            "--feature=pseudo-file-executable",
+            "--feature=proposition-forall",
+            "--feature=predicate-shell-exports-variable",
+            "--feature=cli-audit-run",
+        ] {
+            assert!(
+                !terse.contains(stale),
+                "stale id {:?} leaked into terse output:\n{}",
+                stale,
+                terse
+            );
+        }
+    }
 }

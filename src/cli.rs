@@ -145,7 +145,7 @@ pub enum AuditCommand {
         verbose: bool,
 
         /// Filter to a Feature subtree by canonical id (e.g.
-        /// `pseudo-file-env`). Combinable with `-v`.
+        /// `env`). Combinable with `-v`.
         #[arg(long = "feature")]
         feature: Option<String>,
     },

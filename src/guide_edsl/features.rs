@@ -205,59 +205,57 @@ impl Feature {
         }
     }
 
-    /// Canonical machine-friendly id used by `--feature=<id>` (spec/0011 §B.3):
-    /// the variant identifier converted to lowercased + hyphenated form.
+    /// Canonical machine-friendly id used by `--feature=<id>` (spec/0012 §1):
+    /// the shortest natural search term per Feature, hand-chosen. Disambiguation
+    /// rule (§1.2): predicate-level `all`/`any`/`not`/`conditionally` take the
+    /// bare names; the proposition-level versions get an `-prop` suffix.
     pub fn canonical_id(self) -> &'static str {
         use Feature::*;
         match self {
-            PropositionFile => "proposition-file",
-            PropositionForall => "proposition-forall",
-            PropositionExists => "proposition-exists",
-            PropositionAll => "proposition-all",
-            PropositionAny => "proposition-any",
-            PropositionNot => "proposition-not",
-            PropositionConditionally => "proposition-conditionally",
-            PredicateFileExists => "predicate-file-exists",
-            PredicateTextHasLines => "predicate-text-has-lines",
-            PredicateTextMatches => "predicate-text-matches",
-            PredicateTextContains => "predicate-text-contains",
-            PredicateShellExportsVariable => "predicate-shell-exports-variable",
-            PredicateShellDefinesVariable => "predicate-shell-defines-variable",
-            PredicateShellAddsToPath => "predicate-shell-adds-to-path",
-            PredicatePropertiesDefinesKey => "predicate-properties-defines-key",
-            PredicateXmlMatches => "predicate-xml-matches",
-            PredicateJsonMatches => "predicate-json-matches",
-            PredicateYamlMatches => "predicate-yaml-matches",
-            PredicateAnd => "predicate-and",
-            PredicateOr => "predicate-or",
-            PredicateNot => "predicate-not",
-            PredicateConditionally => "predicate-conditionally",
-            PredicateShellExportsVariableValueMatches => {
-                "predicate-shell-exports-variable-value-matches"
-            }
-            PredicateShellDefinesVariableValueMatches => {
-                "predicate-shell-defines-variable-value-matches"
-            }
-            PseudoFileEnv => "pseudo-file-env",
-            PseudoFileExecutable => "pseudo-file-executable",
+            PropositionFile => "file",
+            PropositionForall => "forall",
+            PropositionExists => "exists",
+            PropositionAll => "all-prop",
+            PropositionAny => "any-prop",
+            PropositionNot => "not-prop",
+            PropositionConditionally => "conditionally-prop",
+            PredicateFileExists => "file-exists",
+            PredicateTextHasLines => "text-has-lines",
+            PredicateTextMatches => "text-matches",
+            PredicateTextContains => "text-contains",
+            PredicateShellExportsVariable => "shell-exports",
+            PredicateShellDefinesVariable => "shell-defines",
+            PredicateShellAddsToPath => "shell-adds-to-path",
+            PredicatePropertiesDefinesKey => "properties-defines-key",
+            PredicateXmlMatches => "xml-matches",
+            PredicateJsonMatches => "json-matches",
+            PredicateYamlMatches => "yaml-matches",
+            PredicateAnd => "and",
+            PredicateOr => "or",
+            PredicateNot => "not",
+            PredicateConditionally => "conditionally",
+            PredicateShellExportsVariableValueMatches => "shell-exports-value-matches",
+            PredicateShellDefinesVariableValueMatches => "shell-defines-value-matches",
+            PseudoFileEnv => "env",
+            PseudoFileExecutable => "executable",
             ControlFile => "control-file",
-            ControlIdField => "control-id-field",
-            ControlTitleField => "control-title-field",
-            ControlDescriptionField => "control-description-field",
-            ControlRemediationField => "control-remediation-field",
-            TestFixtureFormat => "test-fixture-format",
-            TestFixtureEnvOverride => "test-fixture-env-override",
-            TestFixtureExecutableOverride => "test-fixture-executable-override",
-            TestFixtureMalformedRejection => "test-fixture-malformed-rejection",
-            CliAuditRun => "cli-audit-run",
-            CliAuditNew => "cli-audit-new",
-            CliAuditAdd => "cli-audit-add",
-            CliAuditList => "cli-audit-list",
-            CliAuditDelete => "cli-audit-delete",
-            CliAuditGuide => "cli-audit-guide",
-            CliAuditTest => "cli-audit-test",
-            CliAuditIgnoreFlag => "cli-audit-ignore-flag",
-            CliAuditWarnOnlyFlag => "cli-audit-warn-only-flag",
+            ControlIdField => "control-id",
+            ControlTitleField => "control-title",
+            ControlDescriptionField => "control-description",
+            ControlRemediationField => "control-remediation",
+            TestFixtureFormat => "test-fixture",
+            TestFixtureEnvOverride => "env-override",
+            TestFixtureExecutableOverride => "executable-override",
+            TestFixtureMalformedRejection => "fixture-malformed-rejection",
+            CliAuditRun => "audit-run",
+            CliAuditNew => "audit-new",
+            CliAuditAdd => "audit-add",
+            CliAuditList => "audit-list",
+            CliAuditDelete => "audit-delete",
+            CliAuditGuide => "audit-guide",
+            CliAuditTest => "audit-test",
+            CliAuditIgnoreFlag => "ignore-flag",
+            CliAuditWarnOnlyFlag => "warn-only-flag",
         }
     }
 
@@ -408,6 +406,43 @@ mod tests {
             assert_eq!(got, Some(*f), "round-trip failed for {}", f.name());
         }
         assert_eq!(Feature::from_canonical_id("not-a-feature"), None);
+    }
+
+    /// Spec/0012 §4.1 — concrete spot-check that the natural short ids
+    /// chosen in §1.1 are present (and that the disambiguation rule §1.2 was
+    /// applied to the proposition-level combinators).
+    #[test]
+    fn canonical_id_natural_short_forms() {
+        let pairs: &[(Feature, &str)] = &[
+            (Feature::PseudoFileEnv, "env"),
+            (Feature::PseudoFileExecutable, "executable"),
+            (Feature::PropositionForall, "forall"),
+            (Feature::PropositionExists, "exists"),
+            (Feature::PropositionFile, "file"),
+            (Feature::PropositionAll, "all-prop"),
+            (Feature::PropositionAny, "any-prop"),
+            (Feature::PropositionNot, "not-prop"),
+            (Feature::PropositionConditionally, "conditionally-prop"),
+            (Feature::PredicateAnd, "and"),
+            (Feature::PredicateOr, "or"),
+            (Feature::PredicateNot, "not"),
+            (Feature::PredicateConditionally, "conditionally"),
+            (Feature::PredicateShellExportsVariable, "shell-exports"),
+            (Feature::PredicateShellDefinesVariable, "shell-defines"),
+            (Feature::TestFixtureEnvOverride, "env-override"),
+            (Feature::CliAuditRun, "audit-run"),
+            (Feature::CliAuditIgnoreFlag, "ignore-flag"),
+        ];
+        for (f, want) in pairs {
+            assert_eq!(
+                f.canonical_id(),
+                *want,
+                "spec/0012 §1.1 expected {} → {:?}, got {:?}",
+                f.name(),
+                want,
+                f.canonical_id()
+            );
+        }
     }
 
     /// Walking `.root()` always reaches a Feature with no parent, in <= COUNT hops.
