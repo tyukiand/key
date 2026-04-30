@@ -5,4 +5,5 @@ pub mod guide_edsl;
 pub mod hash;
 pub mod mutation;
 pub mod rules;
+pub mod security;
 pub mod state;

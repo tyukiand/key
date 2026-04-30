@@ -2,13 +2,21 @@
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::process::Command;
 
     use crate::rules::scenario::{all_scenarios, ScenarioStep};
+    use crate::security::exec::{
+        safe_exec, AllowedCommand, AllowedExecutablePath, AllowedSelfArgs, SafeExecResult,
+    };
 
     fn bin_path() -> PathBuf {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
         PathBuf::from(manifest).join("target/debug/key")
+    }
+
+    fn run_self(bin: &PathBuf, args: AllowedSelfArgs) -> SafeExecResult {
+        let exe = AllowedExecutablePath::new(bin)
+            .expect("test binary path must be absolute and free of `..`");
+        safe_exec(AllowedCommand::AuditSelf { binary: exe, args })
     }
 
     #[test]
@@ -21,7 +29,7 @@ mod tests {
             let yaml_dir = tmp.path().join("__yaml");
             std::fs::create_dir_all(&yaml_dir).unwrap();
 
-            let mut last_output: Option<std::process::Output> = None;
+            let mut last_output: Option<SafeExecResult> = None;
             let mut yaml_counter = 0u32;
 
             for (step_idx, step) in scenario.steps.iter().enumerate() {
@@ -43,17 +51,14 @@ mod tests {
                         let yaml_path = yaml_dir.join(format!("audit_{}.yaml", yaml_counter));
                         std::fs::write(&yaml_path, yaml_content).unwrap();
 
-                        let output = Command::new(&bin)
-                            .arg("--test-only-home-dir")
-                            .arg(home)
-                            .arg("audit")
-                            .arg("run")
-                            .arg("--file")
-                            .arg(&yaml_path)
-                            .output()
-                            .expect("run key binary");
-
-                        last_output = Some(output);
+                        let result = run_self(
+                            &bin,
+                            AllowedSelfArgs::AuditRunFile {
+                                home: home.to_path_buf(),
+                                yaml: yaml_path,
+                            },
+                        );
+                        last_output = Some(result);
                     }
                     ScenarioStep::RunAuditTest {
                         yaml_content,
@@ -64,83 +69,70 @@ mod tests {
                         let yaml_path = yaml_dir.join(format!("audit_{}.yaml", yaml_counter));
                         std::fs::write(&yaml_path, yaml_content).unwrap();
 
-                        let mut cmd = Command::new(&bin);
-                        cmd.arg("--test-only-home-dir")
-                            .arg(home)
-                            .arg("audit")
-                            .arg("test")
-                            .arg(&yaml_path)
-                            .arg(home);
-
-                        for msg in expect_failure_messages {
-                            cmd.arg("--expect-failure-message").arg(msg);
-                        }
-                        if let Some(n) = expect_num_failures {
-                            cmd.arg("--expect-failures").arg(n.to_string());
-                        }
-
-                        let output = cmd.output().expect("run key binary");
-                        last_output = Some(output);
+                        let result = run_self(
+                            &bin,
+                            AllowedSelfArgs::AuditTest {
+                                home: home.to_path_buf(),
+                                yaml: yaml_path,
+                                expect_failure_messages: expect_failure_messages.clone(),
+                                expect_num_failures: *expect_num_failures,
+                            },
+                        );
+                        last_output = Some(result);
                     }
                     ScenarioStep::RunAuditProjectNew { work_dir, name } => {
                         let resolved = work_dir.resolve(home);
                         std::fs::create_dir_all(&resolved).unwrap();
 
-                        let output = Command::new(&bin)
-                            .arg("audit")
-                            .arg("project")
-                            .arg("new")
-                            .arg(name)
-                            .current_dir(&resolved)
-                            .output()
-                            .expect("run key binary");
-                        last_output = Some(output);
+                        let result = run_self(
+                            &bin,
+                            AllowedSelfArgs::AuditProjectNew {
+                                work_dir: resolved,
+                                name: name.clone(),
+                            },
+                        );
+                        last_output = Some(result);
                     }
                     ScenarioStep::RunAuditProjectTest { project_dir } => {
                         let resolved = project_dir.resolve(home);
-                        let output = Command::new(&bin)
-                            .arg("audit")
-                            .arg("project")
-                            .arg("test")
-                            .current_dir(&resolved)
-                            .output()
-                            .expect("run key binary");
-                        last_output = Some(output);
+                        let result = run_self(
+                            &bin,
+                            AllowedSelfArgs::AuditProjectTest {
+                                project_dir: resolved,
+                            },
+                        );
+                        last_output = Some(result);
                     }
                     ScenarioStep::RunAuditProjectBuild { project_dir } => {
                         let resolved = project_dir.resolve(home);
-                        let output = Command::new(&bin)
-                            .arg("audit")
-                            .arg("project")
-                            .arg("build")
-                            .current_dir(&resolved)
-                            .output()
-                            .expect("run key binary");
-                        last_output = Some(output);
+                        let result = run_self(
+                            &bin,
+                            AllowedSelfArgs::AuditProjectBuild {
+                                project_dir: resolved,
+                            },
+                        );
+                        last_output = Some(result);
                     }
                     ScenarioStep::RunAuditProjectClean { project_dir } => {
                         let resolved = project_dir.resolve(home);
-                        let output = Command::new(&bin)
-                            .arg("audit")
-                            .arg("project")
-                            .arg("clean")
-                            .current_dir(&resolved)
-                            .output()
-                            .expect("run key binary");
-                        last_output = Some(output);
+                        let result = run_self(
+                            &bin,
+                            AllowedSelfArgs::AuditProjectClean {
+                                project_dir: resolved,
+                            },
+                        );
+                        last_output = Some(result);
                     }
                     ScenarioStep::RunAuditProjectRun { project_dir } => {
                         let resolved = project_dir.resolve(home);
-                        let output = Command::new(&bin)
-                            .arg("--test-only-home-dir")
-                            .arg(home)
-                            .arg("audit")
-                            .arg("project")
-                            .arg("run")
-                            .current_dir(&resolved)
-                            .output()
-                            .expect("run key binary");
-                        last_output = Some(output);
+                        let result = run_self(
+                            &bin,
+                            AllowedSelfArgs::AuditProjectRun {
+                                home: home.to_path_buf(),
+                                project_dir: resolved,
+                            },
+                        );
+                        last_output = Some(result);
                     }
                     ScenarioStep::RunAuditInstall {
                         yaml_content,
@@ -150,15 +142,14 @@ mod tests {
                         let yaml_path = yaml_dir.join(config_name);
                         std::fs::write(&yaml_path, yaml_content).unwrap();
 
-                        let output = Command::new(&bin)
-                            .arg("--test-only-home-dir")
-                            .arg(home)
-                            .arg("audit")
-                            .arg("install")
-                            .arg(&yaml_path)
-                            .output()
-                            .expect("run key binary");
-                        last_output = Some(output);
+                        let result = run_self(
+                            &bin,
+                            AllowedSelfArgs::AuditInstall {
+                                home: home.to_path_buf(),
+                                yaml: yaml_path,
+                            },
+                        );
+                        last_output = Some(result);
                     }
                     ScenarioStep::AssertFileExists { path } => {
                         let resolved = path.resolve(home);
@@ -187,16 +178,14 @@ mod tests {
                                 scenario.name, step_idx
                             )
                         });
-                        if !output.status.success() {
-                            let stderr = String::from_utf8_lossy(&output.stderr);
-                            let stdout = String::from_utf8_lossy(&output.stdout);
+                        if !output.success {
                             panic!(
                                 "Scenario {:?} step {}: expected success but got exit {}\nstdout: {}\nstderr: {}",
                                 scenario.name,
                                 step_idx,
-                                output.status.code().unwrap_or(-1),
-                                stdout,
-                                stderr
+                                output.exit.unwrap_or(-1),
+                                output.stdout,
+                                output.stderr
                             );
                         }
                     }
@@ -207,16 +196,13 @@ mod tests {
                                 scenario.name, step_idx
                             )
                         });
-                        if output.status.success() {
-                            let stdout = String::from_utf8_lossy(&output.stdout);
+                        if output.success {
                             panic!(
                                 "Scenario {:?} step {}: expected failure but got success\nstdout: {}",
-                                scenario.name, step_idx, stdout
+                                scenario.name, step_idx, output.stdout
                             );
                         }
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let combined = format!("{}\n{}", stdout, stderr);
+                        let combined = format!("{}\n{}", output.stdout, output.stderr);
                         for msg in messages {
                             assert!(
                                 combined.contains(msg.as_str()),
@@ -224,8 +210,8 @@ mod tests {
                                 scenario.name,
                                 step_idx,
                                 msg,
-                                stdout,
-                                stderr
+                                output.stdout,
+                                output.stderr
                             );
                         }
                     }

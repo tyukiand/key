@@ -151,13 +151,13 @@ impl Effects for RealEffects {
     }
 
     fn check_ssh_prereqs(&self) -> Result<()> {
-        use std::process::Command;
+        use crate::security::exec::{safe_exec, AllowedCommand, AllowedExecutableName};
         for tool in &["ssh-keygen", "ssh-add"] {
-            let status = Command::new("which")
-                .arg(tool)
-                .output()
+            let exe = AllowedExecutableName::new(tool)
+                .map_err(|e| anyhow::anyhow!("{}", e))
                 .with_context(|| format!("Checking for {}", tool))?;
-            if !status.status.success() {
+            let result = safe_exec(AllowedCommand::Which { exe });
+            if !result.success {
                 bail!(
                     "Required tool '{}' not found on PATH. Please install OpenSSH.",
                     tool
@@ -168,17 +168,19 @@ impl Effects for RealEffects {
     }
 
     fn ssh_keygen_generate(&self, key_path: &Path, comment: &str) -> Result<()> {
-        use std::process::Command;
-        let key_path_str = key_path.to_str().ok_or_else(|| {
-            anyhow::anyhow!("Key path is not valid UTF-8: {}", key_path.display())
-        })?;
-        let status = Command::new("ssh-keygen")
-            .args(["-t", "ed25519", "-f", key_path_str, "-C", comment])
-            .status()
-            .context("Running ssh-keygen")?;
-
-        if !status.success() {
-            bail!("ssh-keygen exited with status {}", status);
+        use crate::security::exec::{
+            safe_exec, AllowedCommand, AllowedComment, AllowedKeyPath, AllowedKeyType,
+        };
+        let key_path_brand = AllowedKeyPath::new(key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
+        let comment_brand = AllowedComment::new(comment).map_err(|e| anyhow::anyhow!("{}", e))?;
+        let key_type = AllowedKeyType::Ed25519;
+        let result = safe_exec(AllowedCommand::SshKeygenGenerate {
+            key_type,
+            comment: comment_brand,
+            key_path: key_path_brand,
+        });
+        if !result.success {
+            bail!("ssh-keygen exited with status {:?}", result.exit);
         }
 
         self.set_permissions(key_path, 0o600)?;
@@ -186,21 +188,14 @@ impl Effects for RealEffects {
     }
 
     fn ssh_keygen_fingerprint(&self, pub_path: &Path) -> Result<String> {
-        use std::process::Command;
-        let pub_path_str = pub_path.to_str().ok_or_else(|| {
-            anyhow::anyhow!("Key path is not valid UTF-8: {}", pub_path.display())
-        })?;
-        let output = Command::new("ssh-keygen")
-            .args(["-l", "-E", "sha256", "-f", pub_path_str])
-            .output()
-            .context("Running ssh-keygen -l")?;
-
-        if !output.status.success() {
+        use crate::security::exec::{safe_exec, AllowedCommand, AllowedKeyPath};
+        let key_path = AllowedKeyPath::new(pub_path).map_err(|e| anyhow::anyhow!("{}", e))?;
+        let result = safe_exec(AllowedCommand::SshKeygenFingerprint { key_path });
+        if !result.success {
             bail!("ssh-keygen -l failed for {}", pub_path.display());
         }
-
-        let line = String::from_utf8_lossy(&output.stdout);
-        let fp = line
+        let fp = result
+            .stdout
             .split_whitespace()
             .nth(1)
             .map(|s| s.to_string())
@@ -209,32 +204,28 @@ impl Effects for RealEffects {
     }
 
     fn ssh_add(&self, key_path: &Path) -> Result<()> {
-        use std::process::Command;
-        let status = Command::new("ssh-add")
-            .arg(key_path)
-            .status()
-            .context("Running ssh-add")?;
-
-        if !status.success() {
-            bail!("ssh-add exited with status {}", status);
+        use crate::security::exec::{safe_exec, AllowedCommand, AllowedKeyPath};
+        let key_path_brand = AllowedKeyPath::new(key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
+        let result = safe_exec(AllowedCommand::SshAddAdd {
+            key_path: key_path_brand,
+        });
+        if !result.success {
+            bail!("ssh-add exited with status {:?}", result.exit);
         }
         Ok(())
     }
 
     fn ssh_add_list(&self) -> Result<String> {
-        use std::process::Command;
-        let output = Command::new("ssh-add")
-            .arg("-l")
-            .output()
-            .context("Running ssh-add -l")?;
-
-        if output.status.code() == Some(1) {
+        use crate::security::exec::{safe_exec, AllowedCommand};
+        let result = safe_exec(AllowedCommand::SshAddList);
+        // ssh-add -l: exit 1 means "agent has no identities" — not an error.
+        if result.exit == Some(1) {
             return Ok(String::new());
         }
-        if !output.status.success() {
-            bail!("ssh-add -l exited with status {}", output.status);
+        if !result.success {
+            bail!("ssh-add -l exited with status {:?}", result.exit);
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(result.stdout)
     }
 
     fn current_date_string(&self) -> String {

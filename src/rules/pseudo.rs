@@ -15,14 +15,14 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
 use crate::rules::ast::{ExecutableSnapshot, PseudoFile, PseudoFileFixture};
+use crate::security::exec::{
+    safe_exec, AllowedCommand, AllowedExecutableName, AllowedExecutablePath, AllowedVersionFlag,
+};
 
 // ---------------------------------------------------------------------------
 // EvalContext: per-audit-run state, including pseudo-file cache (spec §1.4, §3.7)
@@ -141,8 +141,6 @@ fn escape_env_value(v: &str) -> String {
 // <executable:NAME> materialization (spec §3.1–§3.3, §3.4.1)
 // ---------------------------------------------------------------------------
 
-const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
-const OUTPUT_CAP: usize = 64 * 1024;
 const MAX_VERSION_LINES: usize = 16;
 
 /// Resolve `<executable:NAME>` per spec §3.3 / §3.4.1:
@@ -213,7 +211,7 @@ fn materialize_executable(
     // Custom-extractor probes (§3.3 c, §3.4.1).
     if let Some(entry) = lookup_custom_extractor(name) {
         for probe in entry.probes {
-            if let Some(out) = run_probe(&path_str, probe.flag) {
+            if let Some(out) = run_probe(name, &path, probe.flag) {
                 let trimmed = trim_to_lines(&out, MAX_VERSION_LINES);
                 let captured = capture_version(&trimmed, probe.version_regex);
                 if let Some(v) = captured {
@@ -238,7 +236,7 @@ fn materialize_executable(
 
     // Generic fallback loop (§3.3 d, §3.4.1).
     for flag in &["--version", "-version", "-V", "--help"] {
-        if let Some(out) = run_probe(&path_str, flag) {
+        if let Some(out) = run_probe(name, &path, flag) {
             if out.is_empty() {
                 continue;
             }
@@ -312,83 +310,27 @@ fn is_executable_file(path: &std::path::Path) -> bool {
     }
 }
 
-/// Run NAME with FLAG; combine first 16 lines of stdout then stderr; cap output.
-/// Times out at 5s, returning None on timeout/spawn failure.
-fn run_probe(path: &str, flag: &str) -> Option<String> {
-    let child = Command::new(path)
-        .arg(flag)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-
-    wait_with_timeout(child, SUBPROCESS_TIMEOUT)
-}
-
-fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> Option<String> {
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
-    let start = Instant::now();
-    loop {
-        if let Some(out) = child.stdout.as_mut() {
-            let mut tmp = [0u8; 4096];
-            if let Ok(n) = out.read(&mut tmp) {
-                if n > 0 && stdout_buf.len() < OUTPUT_CAP {
-                    let take = (OUTPUT_CAP - stdout_buf.len()).min(n);
-                    stdout_buf.extend_from_slice(&tmp[..take]);
-                }
-            }
-        }
-        if let Some(err) = child.stderr.as_mut() {
-            let mut tmp = [0u8; 4096];
-            if let Ok(n) = err.read(&mut tmp) {
-                if n > 0 && stderr_buf.len() < OUTPUT_CAP {
-                    let take = (OUTPUT_CAP - stderr_buf.len()).min(n);
-                    stderr_buf.extend_from_slice(&tmp[..take]);
-                }
-            }
-        }
-        match child.try_wait() {
-            Ok(Some(_status)) => {
-                // Drain remaining bytes
-                if let Some(out) = child.stdout.as_mut() {
-                    let mut rest = Vec::new();
-                    let _ = out.take(OUTPUT_CAP as u64).read_to_end(&mut rest);
-                    let avail = OUTPUT_CAP.saturating_sub(stdout_buf.len());
-                    let take = avail.min(rest.len());
-                    stdout_buf.extend_from_slice(&rest[..take]);
-                }
-                if let Some(err) = child.stderr.as_mut() {
-                    let mut rest = Vec::new();
-                    let _ = err.take(OUTPUT_CAP as u64).read_to_end(&mut rest);
-                    let avail = OUTPUT_CAP.saturating_sub(stderr_buf.len());
-                    let take = avail.min(rest.len());
-                    stderr_buf.extend_from_slice(&rest[..take]);
-                }
-                break;
-            }
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(_) => {
-                let _ = child.kill();
-                return None;
-            }
-        }
+/// Run NAME with FLAG via the safe-exec kernel; combine stdout then stderr.
+/// Returns `None` on spawn failure / timeout / brand validation failure.
+fn run_probe(name: &str, path: &Path, flag: &str) -> Option<String> {
+    let exe_name = AllowedExecutableName::new(name).ok()?;
+    let exe_path = AllowedExecutablePath::new(path).ok()?;
+    let version_flag = AllowedVersionFlag::new(flag).ok()?;
+    let result = safe_exec(AllowedCommand::ProbeVersionGeneric {
+        exe_name,
+        exe_path,
+        flag: version_flag,
+    });
+    if result.exit.is_none() {
+        // Timeout or spawn failure.
+        return None;
     }
-
     let mut combined = String::new();
-    combined.push_str(&String::from_utf8_lossy(&stdout_buf));
+    combined.push_str(&result.stdout);
     if !combined.is_empty() && !combined.ends_with('\n') {
         combined.push('\n');
     }
-    combined.push_str(&String::from_utf8_lossy(&stderr_buf));
+    combined.push_str(&result.stderr);
     Some(combined)
 }
 

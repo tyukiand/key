@@ -5,6 +5,7 @@ mod guide_edsl;
 mod hash;
 mod mutation;
 mod rules;
+mod security;
 mod state;
 
 use anyhow::Result;

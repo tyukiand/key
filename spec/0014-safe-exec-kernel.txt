@@ -1,0 +1,238 @@
+Funnel ALL external-process invocation in `key` through a single
+`safe_exec` function in an innermost security-kernel module,
+gated by an exhaustive `AllowedCommand` enum whose string
+arguments are themselves branded ADTs with restrictive
+sanitizing constructors. After this lands it must be
+straightforward to:
+
+  - point at the ONE place where any external program is run;
+  - point at the ENUM that exhaustively enumerates every
+    permitted invocation;
+  - point at the BRAND TYPES that gate every string flowing
+    into that enum.
+
+Background
+----------
+Today (key 2.10.0) the in-tree exec surface is spread across at
+least three modules:
+
+  src/effects.rs           — production ssh-keygen / ssh-add
+                             / which invocations (~5 sites)
+  src/rules/pseudo.rs      — `<executable:NAME>` version probes
+                             (subprocess to read --version etc)
+  src/rules/scenario_integ.rs — integration-test scenarios
+                                that subprocess the audit binary
+                                itself (~7 sites)
+
+Every site builds a `std::process::Command` directly with
+ad-hoc argument shaping. A reviewer cannot say with confidence
+that an attacker-controlled string can never reach `arg(...)`
+unsanitized; nor can they enumerate exhaustively which
+external programs `key` is allowed to run.
+
+This spec is a refactor: behavior unchanged, security surface
+collapsed.
+
+1. Module layout
+
+1.1 New module `src/security/exec.rs` (or similar). Public surface:
+
+      pub mod exec {
+          pub fn safe_exec(cmd: AllowedCommand) -> SafeExecResult;
+          pub use brands::*;
+          pub enum AllowedCommand { … }
+          pub struct SafeExecResult { … }
+      }
+
+    All other code that used to call `std::process::Command`
+    or `Command::new` MUST go through `safe_exec`. Direct use
+    of `std::process::Command` outside this module is
+    forbidden — enforced by §4 below.
+
+1.2 The module's name says what it is. Suggested:
+    `src/security/`. Short. Single file is fine for now;
+    split into submodules (brands, allowed_command, exec) if
+    it gets unwieldy.
+
+2. AllowedCommand enum
+
+2.1 Initial roster (one variant per real invocation; collapse
+    only when arguments are isomorphic):
+
+      enum AllowedCommand {
+          Which { exe: AllowedExecutableName },
+          SshKeygenGenerate {
+              key_type: AllowedKeyType,
+              comment: AllowedComment,
+              key_path: AllowedKeyPath,
+          },
+          SshKeygenFingerprint { key_path: AllowedKeyPath },
+          SshAddAdd { key_path: AllowedKeyPath },
+          SshAddList,
+          ProbeVersionGeneric {
+              exe: AllowedExecutableName,
+              flag: AllowedVersionFlag,
+          },
+          ProbeVersionDocker,
+          ProbeVersionScala,
+          // …one variant per pseudo-file extractor…
+          AuditSelf {
+              args: AllowedSelfArgs,   // structured CLI args for
+                                       // tests/scenario_integ
+          },
+      }
+
+    The exact roster is finalized during implementation by
+    walking every existing call site. Each existing site MUST
+    map to exactly one AllowedCommand variant. Discovering
+    that a site cannot be expressed as a finite enum variant
+    (e.g. test harness needs arbitrary args) is itself an
+    important finding — tests get their own
+    `AllowedCommand::AuditSelf { args: AllowedSelfArgs }`
+    where `AllowedSelfArgs` enumerates the test-harness-only
+    shapes; tests do NOT get arbitrary-string passthrough.
+
+2.2 Variants are non-extensible from outside the module
+    (the enum is `#[non_exhaustive]` from the consumer side
+    only via being declared inside `security::exec`; consumers
+    construct via `AllowedCommand::SshAddList`-style, not via
+    pattern-matching factories from outside).
+
+3. Brand types
+
+3.1 Every string-shaped field on an `AllowedCommand` variant
+    is its OWN newtype with a private inner String and a
+    fallible sanitizing constructor:
+
+      pub struct AllowedExecutableName(String);
+      impl AllowedExecutableName {
+          pub fn new(s: &str) -> Result<Self, BrandError> {
+              if !s.chars().all(|c|
+                  c.is_ascii_alphanumeric()
+                  || c == '_' || c == '-' || c == '.' || c == '+')
+                 || s.is_empty()
+                 || s.len() > 64
+              {
+                  return Err(BrandError::InvalidExeName(s.into()));
+              }
+              Ok(Self(s.to_string()))
+          }
+          pub fn as_str(&self) -> &str { &self.0 }
+      }
+
+    No public constructor takes a `String` directly; all
+    construction goes through `new` (or a stricter
+    constant-set checker like
+    `AllowedExecutableName::well_known("docker")`). Same
+    treatment for:
+      - AllowedKeyPath        — must be inside `~/.key/keys/`,
+                                no `..`, no symlinks beyond
+                                that subtree;
+      - AllowedComment        — printable ASCII, length cap,
+                                no shell-meta;
+      - AllowedKeyType        — closed set: ed25519, rsa-4096,
+                                ecdsa-p256, ed25519-sk;
+      - AllowedVersionFlag    — closed set: "--version",
+                                "-version", "-V", "--help";
+      - AllowedSelfArgs       — enum of test-harness invocation
+                                shapes;
+      - any other string surface that flows into `arg(...)`.
+
+3.2 BrandError is a single enum with one variant per
+    constructor failure mode. Errors are explicit — no
+    `unwrap`-on-construct in production code paths (tests
+    may unwrap on KNOWN-good literals).
+
+3.3 `Display` impls for brands print the inner string verbatim
+    so error messages remain useful. No special escaping.
+
+4. Lint / enforcement
+
+4.1 Add a `tests/no_direct_exec.rs` integration test that:
+      - walks `src/**/*.rs` (excluding the security module
+        itself);
+      - greps for any of:
+          `std::process::Command`, `process::Command`,
+          `Command::new`, `tokio::process`, `subprocess::`,
+          backticks (n/a in Rust but keep alert);
+      - asserts ZERO matches outside `src/security/`.
+      - Allowlist: the module file path `src/security/exec.rs`
+        is the only place those tokens are permitted.
+    Failure prints the offending file + line.
+
+4.2 Migration: every existing call site (per the inventory in
+    Background) is rewritten to construct an
+    `AllowedCommand` and pass it to `safe_exec`. After
+    migration, the test in §4.1 is the load-bearing
+    invariant for "all exec goes through one place".
+
+5. safe_exec semantics
+
+5.1 `safe_exec` is the only function that actually invokes
+    `std::process::Command`. It:
+      a) translates the AllowedCommand variant into a
+         (program, argv) tuple using the brand types' as_str
+         accessors;
+      b) sets a deterministic, minimal environment
+         (PATH inherited; everything else cleared by default
+         unless the variant declares it needs more);
+      c) imposes a per-call timeout (default 30s; overridable
+         per-variant if a real use case needs it — declare
+         the override in code, not at the call site);
+      d) bounds stdout/stderr capture (e.g. 1 MiB per stream;
+         truncate with a clear marker if exceeded);
+      e) returns a structured `SafeExecResult { exit, stdout,
+         stderr, command_summary }`.
+
+5.2 Logging: every `safe_exec` call is logged at debug level
+    with the AllowedCommand variant name (NOT the full
+    arguments; that may leak path info but the variant alone
+    is informational). Logging is not a security boundary,
+    just an audit aid.
+
+5.3 No `shell: true`-style escapes. No `bash -c` ever.
+    No string-concatenated argv. The brand types make this
+    structurally impossible — there is no `arg(s: String)`
+    at the call surface.
+
+6. Tests
+
+6.1 Brand-constructor tests for every AllowedXxx newtype:
+      - happy-path: all valid strings accepted;
+      - reject every documented invalid shape with the
+        specific BrandError variant;
+      - boundary: edge-of-allowed lengths, edge characters
+        in allowed set, single off-by-one in disallowed set.
+
+6.2 No-direct-exec lint test (§4.1).
+
+6.3 safe_exec integration tests using one-shot variants:
+      - `Which { exe: AllowedExecutableName::new("ls").unwrap() }`
+        returns 0 (assuming ls is on PATH in the test env);
+      - `ProbeVersionGeneric` with a vendored fixture binary
+        from `tests/fixtures/bin/` returns the expected
+        snapshot.
+
+6.4 Migration regression: every existing test that exercised
+    a now-migrated call site continues to pass.
+
+7. Out of scope
+
+- Capability-based further restrictions (seccomp, no-network
+  per-variant, etc.). Could be a follow-up; this spec is
+  about the formal-language gate, not OS-level sandboxing.
+- Changing the user-visible CLI or behavior of any command.
+- Performance: the overhead of construction-then-pattern-match
+  is negligible for exec, ignore.
+- Replacing `std::process::Command` with an async equivalent.
+
+8. Verification
+
+- `./test.sh` PASS — including the no-direct-exec test (§4.1)
+  AND the brand-constructor test suite (§6.1) AND every
+  pre-existing test (regression).
+- `grep -rn 'Command::new' src/` outside `src/security/`
+  returns zero matches.
+- The user-visible behavior of `key add`, `key activate`,
+  `key audit run` etc. is unchanged.
+- Commit; release tag is the receptionist's call.
