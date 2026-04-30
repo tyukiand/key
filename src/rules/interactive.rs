@@ -1022,6 +1022,288 @@ fn proposition_to_answers_inner(prop: &Proposition, answers: &mut Vec<String>) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Typed-AsmOp compilers (spec/0015 §6.1) — same answer-stream logic as the
+// `*_to_answers` helpers above, but emitting the typed AsmOp alphabet directly.
+//
+// The build_* functions above still consume `Answerer` (raw strings); the
+// typed pipeline rendezvous is `asm_to_string` below — driving CannedAnswerer
+// with the lowered AsmOp sequence reproduces the same Vec<String> output as
+// the legacy `*_to_answers`.
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "testing"))]
+use crate::interaction::{AsmOp, LexicalPattern};
+
+#[cfg(any(test, feature = "testing"))]
+#[allow(dead_code)]
+pub fn compile_data_schema(schema: &DataSchema) -> Vec<AsmOp> {
+    let mut ops = Vec::new();
+    compile_data_schema_inner(schema, &mut ops);
+    ops
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[allow(dead_code)]
+fn select(tag: &str) -> AsmOp {
+    AsmOp::Select(LexicalPattern::new(tag))
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[allow(dead_code)]
+fn enter(s: impl Into<String>) -> AsmOp {
+    AsmOp::Enter(s.into())
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[allow(dead_code)]
+fn compile_data_schema_inner(schema: &DataSchema, ops: &mut Vec<AsmOp>) {
+    match schema {
+        DataSchema::Anything => ops.push(select("anything")),
+        DataSchema::IsString => ops.push(select("is-string")),
+        DataSchema::IsStringMatching(re) => {
+            ops.push(select("is-string-matching"));
+            ops.push(enter(re.clone()));
+        }
+        DataSchema::IsNumber => ops.push(select("is-number")),
+        DataSchema::IsBool => ops.push(select("is-bool")),
+        DataSchema::IsTrue => ops.push(select("is-true")),
+        DataSchema::IsFalse => ops.push(select("is-false")),
+        DataSchema::IsNull => ops.push(select("is-null")),
+        DataSchema::IsObject(entries) => {
+            ops.push(select("is-object"));
+            for (i, (key, sub)) in entries.iter().enumerate() {
+                ops.push(enter(key.clone()));
+                compile_data_schema_inner(sub, ops);
+                if i < entries.len() - 1 {
+                    ops.push(AsmOp::Yes);
+                } else {
+                    ops.push(AsmOp::No);
+                }
+            }
+        }
+        DataSchema::IsArray(check) => {
+            ops.push(select("is-array"));
+            if let Some(ref f) = check.forall {
+                ops.push(AsmOp::Yes);
+                compile_data_schema_inner(f, ops);
+            } else {
+                ops.push(AsmOp::No);
+            }
+            if let Some(ref e) = check.exists {
+                ops.push(AsmOp::Yes);
+                compile_data_schema_inner(e, ops);
+            } else {
+                ops.push(AsmOp::No);
+            }
+            if !check.at.is_empty() {
+                ops.push(AsmOp::Yes);
+                for (i, (idx, sub)) in check.at.iter().enumerate() {
+                    ops.push(enter(idx.to_string()));
+                    compile_data_schema_inner(sub, ops);
+                    if i < check.at.len() - 1 {
+                        ops.push(AsmOp::Yes);
+                    } else {
+                        ops.push(AsmOp::No);
+                    }
+                }
+            } else {
+                ops.push(AsmOp::No);
+            }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[allow(dead_code)]
+pub fn compile_predicate(pred: &FilePredicateAst) -> Vec<AsmOp> {
+    let mut ops = Vec::new();
+    compile_predicate_inner(pred, &mut ops);
+    ops
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[allow(dead_code)]
+fn compile_predicate_inner(pred: &FilePredicateAst, ops: &mut Vec<AsmOp>) {
+    match pred {
+        FilePredicateAst::FileExists => ops.push(select("file-exists")),
+        FilePredicateAst::TextMatchesRegex(re) => {
+            ops.push(select("text-matches"));
+            ops.push(enter(re.clone()));
+        }
+        FilePredicateAst::TextContains(s) => {
+            ops.push(select("text-contains"));
+            ops.push(enter(s.clone()));
+        }
+        FilePredicateAst::TextHasLines { min, max } => {
+            ops.push(select("text-has-lines"));
+            ops.push(enter(
+                min.map(|n| n.to_string()).unwrap_or_else(|| "none".into()),
+            ));
+            ops.push(enter(
+                max.map(|n| n.to_string()).unwrap_or_else(|| "none".into()),
+            ));
+        }
+        FilePredicateAst::ShellExports(var) => {
+            ops.push(select("shell-exports"));
+            ops.push(enter(var.clone()));
+        }
+        FilePredicateAst::ShellDefinesVariable(var) => {
+            ops.push(select("shell-defines"));
+            ops.push(enter(var.clone()));
+        }
+        FilePredicateAst::ShellAddsToPath(var) => {
+            ops.push(select("shell-adds-to-path"));
+            ops.push(enter(var.clone()));
+        }
+        FilePredicateAst::PropertiesDefinesKey(key) => {
+            ops.push(select("properties-defines-key"));
+            ops.push(enter(key.clone()));
+        }
+        FilePredicateAst::XmlMatchesPath(path) => {
+            ops.push(select("xml-matches"));
+            ops.push(enter(path.clone()));
+        }
+        FilePredicateAst::JsonMatches(schema) => {
+            ops.push(select("json-matches"));
+            compile_data_schema_inner(schema, ops);
+        }
+        FilePredicateAst::YamlMatches(schema) => {
+            ops.push(select("yaml-matches"));
+            compile_data_schema_inner(schema, ops);
+        }
+        FilePredicateAst::All(preds) => {
+            ops.push(select("all"));
+            for (i, p) in preds.iter().enumerate() {
+                compile_predicate_inner(p, ops);
+                if i < preds.len() - 1 {
+                    ops.push(AsmOp::Yes);
+                } else {
+                    ops.push(AsmOp::No);
+                }
+            }
+        }
+        FilePredicateAst::Any { hint, checks } => {
+            ops.push(select("any"));
+            ops.push(enter(hint.clone()));
+            for (i, c) in checks.iter().enumerate() {
+                compile_predicate_inner(c, ops);
+                if i < checks.len() - 1 {
+                    ops.push(AsmOp::Yes);
+                } else {
+                    ops.push(AsmOp::No);
+                }
+            }
+        }
+        FilePredicateAst::Not(inner) => {
+            ops.push(select("not"));
+            compile_predicate_inner(inner, ops);
+        }
+        FilePredicateAst::Conditionally { condition, then } => {
+            ops.push(select("conditionally"));
+            compile_predicate_inner(condition, ops);
+            compile_predicate_inner(then, ops);
+        }
+        FilePredicateAst::ShellExportsValueMatches { .. }
+        | FilePredicateAst::ShellDefinesVariableValueMatches { .. } => {
+            panic!(
+                "shell-exports/defines value-matches mapping form is not exposed via the \
+                 interactive picker; only the bare-string form is reachable from `audit add`."
+            );
+        }
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[allow(dead_code)]
+pub fn compile_proposition(prop: &Proposition) -> Vec<AsmOp> {
+    let mut ops = Vec::new();
+    compile_proposition_inner(prop, &mut ops);
+    ops
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[allow(dead_code)]
+fn compile_proposition_inner(prop: &Proposition, ops: &mut Vec<AsmOp>) {
+    match prop {
+        Proposition::FileSatisfies { path, check } => {
+            ops.push(select("file"));
+            ops.push(enter(path.as_str()));
+            compile_predicate_inner(check, ops);
+        }
+        Proposition::Forall { files, check } => {
+            ops.push(select("forall"));
+            for (i, f) in files.iter().enumerate() {
+                ops.push(enter(f.as_str()));
+                if i < files.len() - 1 {
+                    ops.push(AsmOp::Yes);
+                } else {
+                    ops.push(AsmOp::No);
+                }
+            }
+            compile_predicate_inner(check, ops);
+        }
+        Proposition::Exists { files, check } => {
+            ops.push(select("exists"));
+            for (i, f) in files.iter().enumerate() {
+                ops.push(enter(f.as_str()));
+                if i < files.len() - 1 {
+                    ops.push(AsmOp::Yes);
+                } else {
+                    ops.push(AsmOp::No);
+                }
+            }
+            compile_predicate_inner(check, ops);
+        }
+        Proposition::All(props) => {
+            ops.push(select("all"));
+            for (i, p) in props.iter().enumerate() {
+                compile_proposition_inner(p, ops);
+                if i < props.len() - 1 {
+                    ops.push(AsmOp::Yes);
+                } else {
+                    ops.push(AsmOp::No);
+                }
+            }
+        }
+        Proposition::Any(props) => {
+            ops.push(select("any"));
+            for (i, p) in props.iter().enumerate() {
+                compile_proposition_inner(p, ops);
+                if i < props.len() - 1 {
+                    ops.push(AsmOp::Yes);
+                } else {
+                    ops.push(AsmOp::No);
+                }
+            }
+        }
+        Proposition::Not(inner) => {
+            ops.push(select("not"));
+            compile_proposition_inner(inner, ops);
+        }
+        Proposition::Conditionally { condition, then } => {
+            ops.push(select("conditionally"));
+            compile_proposition_inner(condition, ops);
+            compile_proposition_inner(then, ops);
+        }
+    }
+}
+
+/// Lower a typed AsmOp to the legacy answer-string the build_* functions
+/// expect. Used to drive the existing build_* through the typed pipeline so
+/// that compile_*(ast) → AsmOp → string-driver → build_*(ast') yields ast' = ast.
+#[cfg(any(test, feature = "testing"))]
+#[allow(dead_code)]
+pub fn asm_to_legacy_string(op: &AsmOp) -> String {
+    match op {
+        AsmOp::Select(p) => p.as_str().to_string(),
+        AsmOp::Enter(s) => s.clone(),
+        AsmOp::Yes => "y".to_string(),
+        AsmOp::No => "n".to_string(),
+        AsmOp::Back => "back".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1323,5 +1605,99 @@ mod tests {
     fn fuzzy_match_rejects_garbage() {
         let options = predicate_menu_items();
         assert!(fuzzy_match_option("xyzzy-nonsense-garbage", &options).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // spec/0015 §6.1 — typed AsmOp compile_* round-trip. compile_*(ast)
+    // produces a Vec<AsmOp> that, lowered to legacy strings via
+    // asm_to_legacy_string, drives build_* back to ast.
+    // -----------------------------------------------------------------------
+
+    fn drive_with_asm<T, F>(ops: Vec<AsmOp>, mut build: F) -> T
+    where
+        F: FnMut(&mut CannedAnswerer) -> Result<BuildResult<T>>,
+    {
+        let strs: Vec<String> = ops.iter().map(asm_to_legacy_string).collect();
+        let mut answerer = CannedAnswerer::new(strs);
+        match build(&mut answerer).unwrap() {
+            BuildResult::Built(t) => t,
+            BuildResult::GoBack => panic!("unexpected GoBack from typed-AsmOp drive"),
+        }
+    }
+
+    #[test]
+    fn compile_data_schema_round_trip() {
+        for schema in all_data_schema_variants() {
+            let ops = compile_data_schema(&schema);
+            let rebuilt = drive_with_asm(ops, build_data_schema);
+            assert_eq!(rebuilt, schema, "compile_data_schema round-trip diff");
+        }
+    }
+
+    #[test]
+    fn compile_predicate_round_trip() {
+        for pred in all_predicate_variants() {
+            if matches!(
+                pred,
+                FilePredicateAst::ShellExportsValueMatches { .. }
+                    | FilePredicateAst::ShellDefinesVariableValueMatches { .. }
+            ) {
+                continue;
+            }
+            let ops = compile_predicate(&pred);
+            let rebuilt = drive_with_asm(ops, build_predicate);
+            assert_eq!(rebuilt, pred, "compile_predicate round-trip diff");
+        }
+    }
+
+    #[test]
+    fn compile_proposition_round_trip() {
+        for prop in all_proposition_variants() {
+            let ops = compile_proposition(&prop);
+            let rebuilt = drive_with_asm(ops, build_proposition);
+            assert_eq!(rebuilt, prop, "compile_proposition round-trip diff");
+        }
+    }
+
+    /// The typed AsmOp stream lowered to strings must equal the legacy
+    /// `*_to_answers` output — the typed alphabet is a strict refinement,
+    /// not a divergent representation.
+    #[test]
+    fn compile_predicate_matches_legacy_to_answers() {
+        for pred in all_predicate_variants() {
+            if matches!(
+                pred,
+                FilePredicateAst::ShellExportsValueMatches { .. }
+                    | FilePredicateAst::ShellDefinesVariableValueMatches { .. }
+            ) {
+                continue;
+            }
+            let asm = compile_predicate(&pred);
+            let strs: Vec<String> = asm.iter().map(asm_to_legacy_string).collect();
+            let legacy = predicate_to_answers(&pred);
+            // The two streams must agree where both produce a tag/text/yes-no;
+            // the only divergence allowed is that legacy emits a 1-based index
+            // string while AsmOp emits the canonical tag — both are accepted
+            // by build_predicate (canonical name is unique and matches).
+            // Therefore we compare the string-driven output of build_predicate
+            // for each, not the raw streams.
+            let rebuilt_asm = {
+                let mut a = CannedAnswerer::new(strs);
+                match build_predicate(&mut a).unwrap() {
+                    BuildResult::Built(p) => p,
+                    BuildResult::GoBack => panic!("unexpected GoBack"),
+                }
+            };
+            let rebuilt_legacy = {
+                let mut a = CannedAnswerer::new(legacy);
+                match build_predicate(&mut a).unwrap() {
+                    BuildResult::Built(p) => p,
+                    BuildResult::GoBack => panic!("unexpected GoBack"),
+                }
+            };
+            assert_eq!(rebuilt_asm, pred);
+            assert_eq!(rebuilt_legacy, pred);
+            assert_eq!(rebuilt_asm, rebuilt_legacy);
+        }
     }
 }

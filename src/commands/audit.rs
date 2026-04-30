@@ -554,14 +554,19 @@ fn find_main_yaml(project_dir: &Path) -> Result<PathBuf> {
 }
 
 pub fn project_test(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
-    let main_yaml = find_main_yaml(project_dir)?;
-    let cf = load_control_file(&main_yaml.to_string_lossy())?;
-
-    let tests_path = project_dir.join("src/test/tests.yaml");
-    let tests_content = std::fs::read_to_string(&tests_path)
-        .with_context(|| format!("Cannot read {}", tests_path.display()))?;
-    let tf = parse_test_file(&tests_content)
-        .with_context(|| format!("Invalid test file: {}", tests_path.display()))?;
+    // Spec/0015 §5: load through the Project ADT — single source of truth
+    // for project structure. The existing per-suite iteration UX is preserved
+    // by iterating the loaded Project's test_suites directly.
+    let project = crate::project::Project::load_from_dir(project_dir)?;
+    let _ = find_main_yaml(project_dir)?; // legacy single-yaml structural check
+    let cf = crate::rules::ast::ControlFile {
+        controls: project
+            .all_controls()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+    };
+    let tf = &project.tests.inner;
 
     let resources_dir = project_dir.join("src/test/resources");
     let mut total_pass = 0usize;
@@ -736,9 +741,45 @@ pub fn project_clean(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
 }
 
 pub fn project_run(project_dir: &Path, home_dir: &Path, fx: &dyn Effects) -> Result<()> {
-    let main_yaml = find_main_yaml(project_dir)?;
-    let yaml_str = main_yaml.to_string_lossy().to_string();
-    run_audit(&yaml_str, home_dir, &[], &[], fx)
+    // Spec/0015 §5: route over Project methods. Behavior preserved: same
+    // PASS/FAIL prints, same exit semantics.
+    let _ = find_main_yaml(project_dir)?;
+    let project = crate::project::Project::load_from_dir(project_dir)?;
+    let mut has_failure = false;
+    let mut total_pass = 0usize;
+    let mut total_fail = 0usize;
+    for control in project.all_controls() {
+        match crate::rules::evaluate::evaluate(&control.check, home_dir) {
+            Ok(()) => {
+                total_pass += 1;
+                fx.println(&format!(
+                    "\x1b[32m[PASS]\x1b[0m {} \u{2014} {}",
+                    control.id, control.title
+                ));
+            }
+            Err(failures) => {
+                total_fail += 1;
+                has_failure = true;
+                fx.println(&format!(
+                    "\x1b[31m[FAIL]\x1b[0m {} \u{2014} {}",
+                    control.id, control.title
+                ));
+                fx.println(&format!("       Description: {}", control.description));
+                fx.println(&format!("       Remediation: {}", control.remediation));
+                for f in &failures {
+                    fx.println(&format!("       - {}", f));
+                }
+            }
+        }
+    }
+    fx.println(&format!(
+        "\n{} passed, {} failed, 0 warnings",
+        total_pass, total_fail
+    ));
+    if has_failure {
+        bail!("{} control(s) failed.", total_fail);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,0 +1,341 @@
+Generalize the interactive surface from "answer stream against a
+fixed dialog" to a full coroutine-based interaction language
+that:
+
+  - models the entire audit project as a pure in-memory ADT,
+  - represents user/agent input as a typed reactive assembly
+    capable of inspecting current menu state,
+  - supports both ADD and DELETE operations (fdisk-style),
+  - admits a systematic transformation between input
+    representations (typed-assembly ↔ low-level int/yn/text),
+  - and turns the round-trip property into the load-bearing
+    invariant for both the menu and the assembly together.
+
+Background
+----------
+spec/0013 §B.8 shipped a `Vec<String>` answer stream and a per-
+AST-kind compiler. The user's analysis (2026-04-30) was:
+
+  - the assembly is implicit and untyped — meanings of "1",
+    "y", "docker" depend purely on what the engine asks next;
+  - inputs are CANNED, not REACTIVE — a stream cannot inspect
+    the menu state to choose;
+  - there's no DELETE — the dialog can only ADD controls, and
+    a project's lifecycle (edit, prune, regenerate) is
+    nowhere reified;
+  - there's no in-memory project ADT — everything goes
+    straight to disk.
+
+This spec lifts all four together because they're one design.
+
+1. The Project ADT
+
+1.1 New module `src/project.rs` (or `src/project/mod.rs`).
+    Public surface:
+
+      pub struct Project {
+          pub controls: BTreeMap<ControlFileName, ControlFile>,
+          pub fixtures: BTreeMap<FixtureFileName, FixtureFile>,
+          pub tests:    TestsYaml,
+          pub meta:     ProjectMeta,
+      }
+
+    where every component is an existing AST or a thin wrapper
+    around one. ControlFileName / FixtureFileName are branded
+    newtypes (per spec 0014's brand pattern); BTreeMap keeps
+    deterministic ordering for round-trip.
+
+1.2 `Project::empty() -> Project` is the canonical zero value.
+
+1.3 `Project::load_from_dir(path) -> Result<Project>` and
+    `Project::write_to_dir(path) -> Result<()>` are the ONLY
+    filesystem touchpoints. Everything else operates on the
+    in-memory Project.
+
+1.4 `Project::run_tests(...) -> TestsReport` operates entirely
+    in memory: every fixture is in the Project ADT, every
+    control is in the Project ADT, no tempdir, no subprocess.
+    This is the load-bearing reuse — the same Project a user
+    just edited can be tested without a write+reload cycle.
+
+    `Project::run_audit_against_filesystem(...) -> AuditReport`
+    loads the controls from the in-memory Project but
+    evaluates predicates against the REAL filesystem (because
+    that's the whole point of `key audit run`). The
+    in-memory Project still owns the controls + settings;
+    only the SUBJECTS (concrete files, env, executables)
+    come from the host. Pseudo-file overrides remain a
+    test-only path.
+
+    Naming makes the asymmetry explicit: `run_tests` and
+    `run_audit_against_filesystem` are clearly different
+    surfaces. No "polymorphic in subject backend" abstraction
+    in this iteration — adding one later is fine, but here
+    we just admit the two real cases honestly.
+
+1.5 Mutation operations are pure functions:
+
+      Project::with_control_added(self, name, ControlFile)
+          -> Result<Project, ProjectMutationError>
+      Project::with_control_deleted(self, name)
+          -> Result<Project, ProjectMutationError>
+      Project::with_fixture_added / deleted
+      Project::with_test_entry_added / deleted
+
+    Each returns a NEW Project; no in-place mutation on the
+    public surface. Errors are explicit (duplicate-id,
+    not-found, dangling-reference, …).
+
+2. The Menu / Interaction coroutine
+
+2.1 New module `src/interaction.rs`. Generic over the input
+    type. The exact trait/struct shape is at the
+    implementer's discretion as long as the SPIRIT holds:
+
+      - inputs are reactive (each is a function of the
+        current Menu, not pre-decided independent of state);
+      - the Interaction value carries all in-progress state;
+      - the type is generic over an input alphabet I;
+      - composition (bind / sub-dialog) is straightforward;
+      - the live driver and the test driver share one
+        execution model.
+
+    A reasonable starting shape (Rust, no async, no
+    generators):
+
+      pub enum Step<I, T> {
+          Suspended { menu: Menu, resume: Box<dyn FnOnce(I) -> Step<I, T>> },
+          Done(T),
+          Failed(InteractionError),
+      }
+
+      pub struct Interaction<I, T> { /* opaque */ }
+      impl<I, T> Interaction<I, T> {
+          pub fn step(self, input: Option<I>) -> Step<I, T>;
+          pub fn run<F: FnMut(&Menu) -> I>(self, mut answer: F) -> Result<T, InteractionError>;
+      }
+
+    Implementer may use a different concrete encoding
+    (state-machine struct, trait objects, channel-based,
+    …) provided the spirit is preserved.
+
+    `Menu` is a structured ADT describing the current
+    suspension point (what question is being asked, what
+    options are available, free-form vs picker, etc.):
+
+      pub enum Menu {
+          Pick { prompt: String, options: Vec<MenuOption> },
+          Free { prompt: String, kind: FreeKind },          // text, integer, regex, …
+          YesNo { prompt: String },
+          Confirm { prompt: String, summary: String },
+      }
+      pub struct MenuOption { pub tag: String, pub label: String, pub aliases: Vec<String> }
+
+    `tag` is the lexically stable identifier (e.g. "forall",
+    "shell-exports"); `label` is the user-facing display
+    (e.g. "Forall — every file matches"); `aliases` lets
+    legacy spellings resolve too.
+
+2.2 `Interaction<I, T>` is generic over the input alphabet.
+    The IDENTITY interaction (the live engine the user
+    drives at the terminal) uses `I = LowLevelInput`:
+
+      pub enum LowLevelInput {
+          /// 1-based menu pick by integer.
+          Index(usize),
+          /// Menu pick by typed-prefix lexical match against
+          /// option `tag` / aliases. Same disambiguation
+          /// rules as AsmOp::Select (case-insensitive,
+          /// unique). The live engine accepts BOTH "3" and
+          /// "forall" at the prompt; whichever resolves
+          /// uniquely wins. Explicitly enumerated as a
+          /// distinct variant so the live driver knows
+          /// which disambiguation to attempt first
+          /// (parse-as-int, then fall back to lexical).
+          Lexical(String),
+          /// Free-form text answer (regex pattern, file
+          /// path, control id, …).
+          Text(String),
+          Yes,
+          No,
+          Back,
+      }
+
+    Note: `Lexical` is only meaningful against `Menu::Pick`;
+    against `Menu::Free` it is a type error (the live driver
+    NEVER produces it for a Free prompt — it always wraps
+    as Text there).
+
+    The TYPED-ASSEMBLY interaction (the round-trip target)
+    uses `I = AsmOp`:
+
+      pub enum AsmOp {
+          Select(LexicalPattern),    // menu pick by lexical match
+          Enter(String),             // free-form
+          Yes,
+          No,
+          Back,
+      }
+      pub struct LexicalPattern(String);
+      // matches Menu::Pick options whose `tag` OR any `alias`
+      // equals the pattern, case-insensitive. Exactly-one
+      // match required.
+
+3. Functorial transformation between input alphabets
+
+3.1 Given any `Interaction<AsmOp, T>`, produce a
+    `Interaction<LowLevelInput, T>` by composing with an
+    adapter that, at each Suspended { menu, resume }, accepts
+    a LowLevelInput, emits the same LowLevelInput downstream,
+    OR refuses (we want the inverse direction more — see 3.2).
+
+3.2 The interesting direction is the OPPOSITE:
+    `Interaction<LowLevelInput, T>` becomes
+    `Interaction<AsmOp, T>` by an adapter that, at each
+    Suspended { menu, resume }, takes an AsmOp, looks at the
+    menu, and translates:
+      - `AsmOp::Select(pattern)` over `Menu::Pick { options }`
+        → find the unique option whose `tag` or alias
+        matches the pattern (case-insensitive); produce
+        `LowLevelInput::Lexical(pattern_string)` and resume.
+        (Equivalent to producing `Index(i)` after lookup —
+        either is fine; pass Lexical through and let the
+        engine resolve, since LowLevelInput now supports
+        both forms anyway.) Zero matches OR multiple matches
+        is a hard error with a clear message naming the
+        pattern, the menu's prompt, and the available tags
+        + aliases.
+      - `AsmOp::Select` against `Menu::Free|YesNo|Confirm`
+        is a type-mismatch error.
+      - `AsmOp::Enter(s)` against `Menu::Free` →
+        `LowLevelInput::Text(s)`. Against any other menu
+        kind: error.
+      - `AsmOp::Yes/No` against `Menu::YesNo` →
+        `LowLevelInput::Yes/No`. Else error.
+      - `AsmOp::Back` always passes through.
+
+3.3 Implementation: a single function
+
+      pub fn lower<T>(asm: Interaction<AsmOp, T>) -> Interaction<LowLevelInput, T>;
+
+    that wraps each Suspended in the translation. Stateless;
+    the menu carries the disambiguation context.
+
+3.4 The reverse — given an `Interaction<LowLevelInput, T>`
+    and a known driver loop, derive the `AsmOp` stream that
+    produced it — is the COMPILER from concrete drives back
+    to portable assembly. Used by spec/0013 §B.8 round-trip.
+
+4. Project mutation as interaction
+
+4.1 The interaction's payload type `T` for the whole-project
+    surface is `Project`. The dialog therefore is
+
+      Interaction<AsmOp, Project>
+
+    starting from `Project::empty()` and accepting AsmOps
+    that mutate it incrementally. The full set of top-level
+    AsmOps is:
+
+      AsmOp::AddControl(...)        // begins a sub-dialog
+      AsmOp::DeleteControl(name)
+      AsmOp::AddFixture(...)
+      AsmOp::DeleteFixture(name)
+      AsmOp::AddTestEntry(...)
+      AsmOp::DeleteTestEntry(name)
+      AsmOp::Done                   // commits, returns Project
+
+    Sub-dialogs (Add*) are Interactions themselves whose
+    output is the added piece; they compose into the
+    top-level via `bind`.
+
+4.2 DELETE operations target an existing element by branded
+    id; not-found is a clear error. The Project is always a
+    valid intermediate — invariants (no dangling refs from
+    tests.yaml to deleted controls) are enforced at the
+    mutation step, not at write-time.
+
+5. Invariants
+
+5.1 Round-trip (the load-bearing property): every Project P
+    can be compiled into an AsmOp stream `compile(P)` such
+    that
+
+      run(empty_project_interaction(), compile(P)) == P
+
+    structurally. Tested over four corpora (per spec/0013
+    §B.8.5):
+      a) every ExampleControl-bundled project from the EDSL
+         guide;
+      b) every project that `audit project test` currently
+         passes against, in the in-tree fixture corpus;
+      c) proptest-generated random Projects (with the
+         existing fuel/width/node-count bounds);
+      d) hand-curated edge-case Projects under
+         tests/fixtures/project_torture/*.yaml (≥5 cases:
+         delete-then-add same id, add-fixture-before-control-
+         that-references-it, two controls with same brand-
+         distinguishable id, …).
+
+5.2 Coverage (extends spec/0013 §B.7): every Feature
+    reachable from the verbose EDSL guide must be exercised
+    by at least one in-memory Project that passes the
+    round-trip property. A Feature appearing only in prose
+    or only in a deleted-element fixture is a hard failure
+    naming the Feature.
+
+5.3 The transformation in §3 must be tested:
+      - lower(asm_interaction).run(low_level_inputs)
+        produces the same Project as
+        asm_interaction.run(asm_inputs) when the
+        low_level_inputs are the translations of asm_inputs;
+      - lower(asm_interaction) given a malformed AsmOp at
+        any step fails with the §3.2 message format
+        (zero/multiple matches, type mismatch).
+
+6. Migration
+
+6.1 Reframe spec/0013's `*_to_answers` functions: they
+    become `compile_*(ast: ...) -> Vec<AsmOp>` with the
+    typed AsmOp alphabet. The downstream `lower(...)`
+    handles the int/yn/text translation. The current
+    untyped Vec<String> stream goes away — it was a
+    transitional artifact.
+
+6.2 src/effects.rs's terminal driver becomes a tiny
+    `run_interactive(interaction: Interaction<LowLevelInput,
+    T>, fx: &dyn Effects) -> Result<T>` that loops
+    Suspended → fx prompt → fx read → resume.
+
+6.3 `key audit add` is rewritten to construct a
+    Project mutation Interaction starting from the
+    project the user is editing (loaded from disk),
+    accept ONE AsmOp from the user (the Add* form), apply,
+    write back. Existing UX preserved: same prompts, same
+    output; the underlying machinery is just typed now.
+
+6.4 `key audit delete` (existing) is rewritten as a single
+    `AsmOp::DeleteControl(name)` against the loaded Project.
+
+7. Out of scope
+
+- Persistent project history / undo (the ADT makes it
+  trivial to implement later, but it's a separate UX
+  question).
+- Network / multi-user concurrent edits.
+- A REPL exposing AsmOp directly to humans (could be a
+  follow-up).
+- Replacing `dialoguer` in the live engine — we still use
+  it for actual terminal I/O; the Interaction abstraction
+  sits ABOVE it.
+
+8. Verification
+
+- ./test.sh PASS — including the new round-trip property
+  over all four corpora, the lower-transformation tests,
+  and the coverage extension.
+- `key audit add` and `key audit delete` behaviorally
+  unchanged from the user's perspective (regression).
+- ci.sh runs clean LOCALLY (cargo clean → fmt → release
+  build → tests) BEFORE any push, per the running rule.
+- Commit; release tag is the receptionist's call.
