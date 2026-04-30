@@ -30,6 +30,7 @@ use anyhow::{bail, Context, Result};
 
 use super::nodes::{ExampleExpect, GuideNode};
 use super::text::Mode;
+use crate::effects::Effects;
 use crate::rules::ast::{
     ControlFile, FailExpectation, PseudoFileFixture, TestCase, TestExpectation, TestFile, TestSuite,
 };
@@ -49,18 +50,24 @@ pub struct EmitSummary {
 /// Materialize an audit project at `out_dir` from `root` using `mode` to
 /// decide which examples are included (terse → non-detail only, verbose →
 /// every example).
-pub fn emit_project(root: &GuideNode, mode: Mode, out_dir: &Path) -> Result<EmitSummary> {
+pub fn emit_project(
+    root: &GuideNode,
+    mode: Mode,
+    out_dir: &Path,
+    fx: &dyn Effects,
+) -> Result<EmitSummary> {
     // §B.1 — out_dir MUST NOT pre-exist OR MUST be empty.
-    if out_dir.exists() {
-        if !out_dir.is_dir() {
+    if fx.path_exists(out_dir) {
+        if !fx.is_dir(out_dir) {
             bail!(
                 "--emit-project target {} exists and is not a directory",
                 out_dir.display()
             );
         }
-        let mut entries =
-            std::fs::read_dir(out_dir).with_context(|| format!("reading {}", out_dir.display()))?;
-        if entries.next().is_some() {
+        let entries = fx
+            .read_dir_names(out_dir)
+            .with_context(|| format!("reading {}", out_dir.display()))?;
+        if !entries.is_empty() {
             bail!(
                 "--emit-project target {} is non-empty; refusing to clobber. \
                  Pick a fresh path or empty the directory.",
@@ -72,9 +79,9 @@ pub fn emit_project(root: &GuideNode, mode: Mode, out_dir: &Path) -> Result<Emit
     let main_dir = out_dir.join("src/main");
     let test_dir = out_dir.join("src/test");
     let resources_dir = test_dir.join("resources");
-    std::fs::create_dir_all(&main_dir)
+    fx.create_dir_all(&main_dir)
         .with_context(|| format!("creating {}", main_dir.display()))?;
-    std::fs::create_dir_all(&resources_dir)
+    fx.create_dir_all(&resources_dir)
         .with_context(|| format!("creating {}", resources_dir.display()))?;
 
     // 1. Walk the (already filtered) tree, collecting ExampleControls + ExampleFixtures.
@@ -109,18 +116,18 @@ pub fn emit_project(root: &GuideNode, mode: Mode, out_dir: &Path) -> Result<Emit
     }
     let control_yaml = generate_control_file(&combined);
     let main_yaml_path = main_dir.join("all-examples.yaml");
-    std::fs::write(&main_yaml_path, &control_yaml)
+    fx.write_file(&main_yaml_path, control_yaml.as_bytes())
         .with_context(|| format!("writing {}", main_yaml_path.display()))?;
 
     // 3. Always-present `empty` fixture: zero env vars + zero executables.
     //    Every ExampleControl that doesn't have a more specific fixture uses
     //    this one — it makes pseudo-file evaluation deterministic.
     let empty_fixture_dir = resources_dir.join("empty");
-    std::fs::create_dir_all(&empty_fixture_dir)
+    fx.create_dir_all(&empty_fixture_dir)
         .with_context(|| format!("creating {}", empty_fixture_dir.display()))?;
-    std::fs::write(
-        empty_fixture_dir.join("pseudo-file-overrides.yaml"),
-        "env-overrides: {}\nexecutable-overrides: {}\n",
+    fx.write_file(
+        &empty_fixture_dir.join("pseudo-file-overrides.yaml"),
+        b"env-overrides: {}\nexecutable-overrides: {}\n",
     )?;
 
     // 4. One fixture dir per ExampleFixture node, named by its `name`.
@@ -132,10 +139,12 @@ pub fn emit_project(root: &GuideNode, mode: Mode, out_dir: &Path) -> Result<Emit
     for n in &fixtures {
         if let GuideNode::ExampleFixture { name, yaml, .. } = n {
             let dir = resources_dir.join(name);
-            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-            std::fs::write(dir.join("pseudo-file-overrides.yaml"), yaml).with_context(|| {
-                format!("writing pseudo-file-overrides.yaml under {}", dir.display())
-            })?;
+            fx.create_dir_all(&dir)
+                .with_context(|| format!("creating {}", dir.display()))?;
+            fx.write_file(&dir.join("pseudo-file-overrides.yaml"), yaml.as_bytes())
+                .with_context(|| {
+                    format!("writing pseudo-file-overrides.yaml under {}", dir.display())
+                })?;
             fixture_dirs.insert((*name).to_string(), dir);
             fixture_count += 1;
         }
@@ -165,7 +174,7 @@ pub fn emit_project(root: &GuideNode, mode: Mode, out_dir: &Path) -> Result<Emit
         };
 
         // Load overrides from that fixture dir, evaluate.
-        let (overrides, actual) = run_control_against(&control.check, &fixture_dir)?;
+        let (overrides, actual) = run_control_against(&control.check, &fixture_dir, fx)?;
         let _ = overrides; // currently informational only
 
         let expect = match (expect_in_edsl, &actual) {
@@ -201,10 +210,10 @@ pub fn emit_project(root: &GuideNode, mode: Mode, out_dir: &Path) -> Result<Emit
     };
     let tests_yaml = generate_test_file(&test_file);
     let tests_path = test_dir.join("tests.yaml");
-    std::fs::write(&tests_path, &tests_yaml)
+    fx.write_file(&tests_path, tests_yaml.as_bytes())
         .with_context(|| format!("writing {}", tests_path.display()))?;
 
-    std::fs::write(out_dir.join(".gitignore"), "target/\n")?;
+    fx.write_file(&out_dir.join(".gitignore"), b"target/\n")?;
 
     Ok(EmitSummary {
         control_count: combined.controls.len(),
@@ -289,13 +298,14 @@ fn pick_fixture(
 fn run_control_against(
     proposition: &crate::rules::ast::Proposition,
     fixture_dir: &Path,
+    fx: &dyn Effects,
 ) -> Result<(
     PseudoFileFixture,
     Result<(), Vec<crate::rules::ast::RuleFailure>>,
 )> {
     let overrides_path = fixture_dir.join("pseudo-file-overrides.yaml");
-    let fixture = if overrides_path.is_file() {
-        let yaml = std::fs::read_to_string(&overrides_path)?;
+    let fixture = if fx.is_file(&overrides_path) {
+        let yaml = fx.read_file_string(&overrides_path)?;
         let (f, _) = crate::rules::fixture::parse_fixture_collect_warnings(&yaml)?;
         f
     } else {
@@ -316,7 +326,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("existing.txt"), "hi").unwrap();
         let r = root();
-        let err = emit_project(&r, Mode::Terse, tmp.path()).unwrap_err();
+        let fx = crate::effects::RealEffects;
+        let err = emit_project(&r, Mode::Terse, tmp.path(), &fx).unwrap_err();
         let msg = format!("{:#}", err);
         assert!(msg.contains("non-empty"), "got {}", msg);
     }
@@ -329,7 +340,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("emitted");
         let r = root();
-        let _ = emit_project(&r, Mode::Verbose, &target).unwrap();
+        let fx = crate::effects::RealEffects;
+        let _ = emit_project(&r, Mode::Verbose, &target, &fx).unwrap();
         assert!(target.join("src/main").is_dir());
         assert!(target.join("src/test").is_dir());
         assert!(target.join("src/test/resources").is_dir());
@@ -351,7 +363,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("emitted");
         let r = root();
-        emit_project(&r, Mode::Verbose, &target).unwrap();
+        let fx = crate::effects::RealEffects;
+        emit_project(&r, Mode::Verbose, &target, &fx).unwrap();
         let main_dir = target.join("src/main");
         for entry in std::fs::read_dir(&main_dir).unwrap() {
             let e = entry.unwrap();
@@ -368,7 +381,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("emitted");
         let r = root();
-        emit_project(&r, Mode::Verbose, &target).unwrap();
+        let fx = crate::effects::RealEffects;
+        emit_project(&r, Mode::Verbose, &target, &fx).unwrap();
         let main_yaml = std::fs::read_to_string(target.join("src/main/all-examples.yaml")).unwrap();
         let cf = parse_control_file(&main_yaml).unwrap();
         let tests_yaml = std::fs::read_to_string(target.join("src/test/tests.yaml")).unwrap();
@@ -393,9 +407,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("emitted-v");
         let r = root();
-        emit_project(&r, Mode::Verbose, &target).unwrap();
-
-        let fx = crate::effects::CannedEffects::new();
+        let fx = crate::effects::RealEffects;
+        emit_project(&r, Mode::Verbose, &target, &fx).unwrap();
         crate::commands::audit::project_test(&target, &fx)
             .unwrap_or_else(|e| panic!("verbose emitted project did not pass: {:#}", e));
     }
@@ -405,8 +418,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("emitted-t");
         let r = root();
-        emit_project(&r, Mode::Terse, &target).unwrap();
-        let fx = crate::effects::CannedEffects::new();
+        let fx = crate::effects::RealEffects;
+        emit_project(&r, Mode::Terse, &target, &fx).unwrap();
         crate::commands::audit::project_test(&target, &fx)
             .unwrap_or_else(|e| panic!("terse emitted project did not pass: {:#}", e));
     }
@@ -536,16 +549,16 @@ mod tests {
         let target_small = tmp.path().join("filtered");
 
         let r = root();
-        let full = emit_project(&r, Mode::Verbose, &target_full).unwrap();
+        let fx = crate::effects::RealEffects;
+        let full = emit_project(&r, Mode::Verbose, &target_full, &fx).unwrap();
 
         // Use `executable` as a representative leaf feature.
         let target_feature = crate::guide_edsl::features::Feature::PseudoFileExecutable;
         let filtered =
             crate::guide_edsl::filter::filter_tree(&r, target_feature).expect("filter result");
-        let small = emit_project(&filtered, Mode::Verbose, &target_small).unwrap();
+        let small = emit_project(&filtered, Mode::Verbose, &target_small, &fx).unwrap();
 
         assert!(small.control_count < full.control_count);
-        let fx = crate::effects::CannedEffects::new();
         crate::commands::audit::project_test(&target_small, &fx)
             .unwrap_or_else(|e| panic!("filtered emitted project did not pass: {:#}", e));
     }

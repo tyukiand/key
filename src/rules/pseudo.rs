@@ -19,9 +19,10 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
+use crate::effects::{OsEffectsRw, RealOsEffects};
 use crate::rules::ast::{ExecutableSnapshot, PseudoFile, PseudoFileFixture};
 use crate::security::exec::{
-    safe_exec, AllowedCommand, AllowedExecutableName, AllowedExecutablePath, AllowedVersionFlag,
+    AllowedCommand, AllowedExecutableName, AllowedExecutablePath, AllowedVersionFlag,
 };
 
 // ---------------------------------------------------------------------------
@@ -296,17 +297,14 @@ fn which_on_path(name: &str) -> Option<PathBuf> {
 }
 
 fn is_executable_file(path: &std::path::Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let Ok(meta) = std::fs::metadata(path) {
-            return meta.is_file() && (meta.mode() & 0o111) != 0;
-        }
-        false
-    }
-    #[cfg(not(unix))]
-    {
-        path.is_file()
+    use crate::effects::OsEffectsRo;
+    let os = RealOsEffects;
+    match os.metadata(path) {
+        Ok(md) => match md.unix_mode {
+            Some(mode) => md.is_file && (mode & 0o111) != 0,
+            None => md.is_file,
+        },
+        Err(_) => false,
     }
 }
 
@@ -316,7 +314,8 @@ fn run_probe(name: &str, path: &Path, flag: &str) -> Option<String> {
     let exe_name = AllowedExecutableName::new(name).ok()?;
     let exe_path = AllowedExecutablePath::new(path).ok()?;
     let version_flag = AllowedVersionFlag::new(flag).ok()?;
-    let result = safe_exec(AllowedCommand::ProbeVersionGeneric {
+    let os = RealOsEffects;
+    let result = os.safe_exec(AllowedCommand::ProbeVersionGeneric {
         exe_name,
         exe_path,
         flag: version_flag,

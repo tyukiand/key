@@ -1,7 +1,11 @@
 /// Unit test interpreter: executes scenarios using internal Rust APIs.
 #[cfg(test)]
 mod tests {
-    use crate::effects::CannedEffects;
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    use crate::effects::os::DirEntryKind;
+    use crate::effects::{CannedEffects, Effects, RealEffects};
     use crate::rules::ast::RuleFailure;
     use crate::rules::evaluate::evaluate;
     use crate::rules::parse::parse_control_file;
@@ -23,20 +27,142 @@ mod tests {
         }
     }
 
-    /// Result type for project commands: Ok(output) or Err(error_message)
-    type CmdResult = Result<String, String>;
+    /// Effects wrapper that delegates FS calls to RealEffects but captures
+    /// println / eprintln in-memory so scenario assertions can pattern-match
+    /// the printed [PASS]/[FAIL] lines that legitimately go to stdout.
+    struct CapturingRealEffects {
+        inner: RealEffects,
+        out: RefCell<Vec<String>>,
+        err: RefCell<Vec<String>>,
+    }
 
-    fn cmd_result_from_anyhow(r: anyhow::Result<()>, fx: &CannedEffects) -> CmdResult {
-        match r {
-            Ok(()) => Ok(fx.output()),
-            Err(e) => {
-                let mut combined = fx.output();
-                combined.push_str(&fx.err_output());
-                combined.push_str(&format!("{:#}", e));
-                Err(combined)
+    impl CapturingRealEffects {
+        fn new() -> Self {
+            Self {
+                inner: RealEffects,
+                out: RefCell::new(Vec::new()),
+                err: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn captured(&self) -> String {
+            let o = self.out.borrow().join("\n");
+            let e = self.err.borrow().join("\n");
+            if e.is_empty() {
+                o
+            } else {
+                format!("{}\n{}", o, e)
             }
         }
     }
+
+    impl Effects for CapturingRealEffects {
+        fn read_file(&self, p: &Path) -> anyhow::Result<Vec<u8>> {
+            self.inner.read_file(p)
+        }
+        fn read_file_string(&self, p: &Path) -> anyhow::Result<String> {
+            self.inner.read_file_string(p)
+        }
+        fn write_file(&self, p: &Path, c: &[u8]) -> anyhow::Result<()> {
+            self.inner.write_file(p, c)
+        }
+        fn path_exists(&self, p: &Path) -> bool {
+            self.inner.path_exists(p)
+        }
+        fn is_dir(&self, p: &Path) -> bool {
+            self.inner.is_dir(p)
+        }
+        fn is_file(&self, p: &Path) -> bool {
+            self.inner.is_file(p)
+        }
+        fn create_dir_all(&self, p: &Path) -> anyhow::Result<()> {
+            self.inner.create_dir_all(p)
+        }
+        fn remove_dir_all(&self, p: &Path) -> anyhow::Result<()> {
+            self.inner.remove_dir_all(p)
+        }
+        fn read_dir_names(&self, p: &Path) -> anyhow::Result<Vec<String>> {
+            self.inner.read_dir_names(p)
+        }
+        fn read_dir_entries(&self, p: &Path) -> anyhow::Result<Vec<DirEntryKind>> {
+            self.inner.read_dir_entries(p)
+        }
+        fn copy_file(&self, s: &Path, d: &Path) -> anyhow::Result<u64> {
+            self.inner.copy_file(s, d)
+        }
+        fn set_permissions(&self, p: &Path, m: u32) -> anyhow::Result<()> {
+            self.inner.set_permissions(p, m)
+        }
+        fn println(&self, msg: &str) {
+            self.out.borrow_mut().push(msg.to_string());
+        }
+        fn eprintln(&self, msg: &str) {
+            self.err.borrow_mut().push(msg.to_string());
+        }
+        fn pick_from_list(&self, p: &str, i: &[String]) -> anyhow::Result<usize> {
+            self.inner.pick_from_list(p, i)
+        }
+        fn prompt_text(&self, p: &str) -> anyhow::Result<String> {
+            self.inner.prompt_text(p)
+        }
+        fn prompt_optional(&self, p: &str) -> anyhow::Result<Option<String>> {
+            self.inner.prompt_optional(p)
+        }
+        fn force_retype(&self, p: &str, e: &str) -> anyhow::Result<()> {
+            self.inner.force_retype(p, e)
+        }
+        fn check_ssh_prereqs(&self) -> anyhow::Result<()> {
+            self.inner.check_ssh_prereqs()
+        }
+        fn ssh_keygen_generate(&self, k: &Path, c: &str) -> anyhow::Result<()> {
+            self.inner.ssh_keygen_generate(k, c)
+        }
+        fn ssh_keygen_fingerprint(&self, p: &Path) -> anyhow::Result<String> {
+            self.inner.ssh_keygen_fingerprint(p)
+        }
+        fn ssh_add(&self, k: &Path) -> anyhow::Result<()> {
+            self.inner.ssh_add(k)
+        }
+        fn ssh_add_list(&self) -> anyhow::Result<String> {
+            self.inner.ssh_add_list()
+        }
+        fn current_date_string(&self) -> String {
+            self.inner.current_date_string()
+        }
+        fn home_dir(&self) -> anyhow::Result<String> {
+            self.inner.home_dir()
+        }
+        fn shell_env(&self) -> anyhow::Result<String> {
+            self.inner.shell_env()
+        }
+        fn current_exe_dir(&self) -> anyhow::Result<PathBuf> {
+            self.inner.current_exe_dir()
+        }
+    }
+
+    /// Result type for project commands: Ok(output) or Err(error_message+output)
+    type CmdResult = Result<String, String>;
+
+    fn cmd_result_from_anyhow(r: anyhow::Result<()>, fx: &CapturingRealEffects) -> CmdResult {
+        let captured = fx.captured();
+        match r {
+            Ok(()) => Ok(captured),
+            Err(e) => {
+                let err_msg = format!("{:#}", e);
+                if captured.is_empty() {
+                    Err(err_msg)
+                } else {
+                    // Combine printed output with error message so scenarios
+                    // can pattern-match either source.
+                    Err(format!("{}\n{}", captured, err_msg))
+                }
+            }
+        }
+    }
+    // Kept around as a hook for any scenario step that still wants captured
+    // output through CannedEffects.
+    #[allow(dead_code)]
+    fn _silence_unused_canned_effects(_: &CannedEffects) {}
 
     #[test]
     fn run_all_scenarios_unit() {
@@ -128,7 +254,10 @@ mod tests {
                         // Temporarily change to work_dir to run project_new
                         let orig_dir = std::env::current_dir().unwrap();
                         std::env::set_current_dir(&resolved).unwrap();
-                        let fx = CannedEffects::new();
+                        // Project commands operate on real on-disk paths the
+                        // scenario set up via std::fs above; use RealEffects so
+                        // the OsEffects-threaded dispatchers see those writes.
+                        let fx = CapturingRealEffects::new();
                         let r = crate::commands::audit::project_new(name, &fx);
                         std::env::set_current_dir(&orig_dir).unwrap();
                         last_cmd_result = Some(cmd_result_from_anyhow(r, &fx));
@@ -136,28 +265,28 @@ mod tests {
                     }
                     ScenarioStep::RunAuditProjectTest { project_dir } => {
                         let resolved = project_dir.resolve(home);
-                        let fx = CannedEffects::new();
+                        let fx = CapturingRealEffects::new();
                         let r = crate::commands::audit::project_test(&resolved, &fx);
                         last_cmd_result = Some(cmd_result_from_anyhow(r, &fx));
                         last_result = None;
                     }
                     ScenarioStep::RunAuditProjectBuild { project_dir } => {
                         let resolved = project_dir.resolve(home);
-                        let fx = CannedEffects::new();
+                        let fx = CapturingRealEffects::new();
                         let r = crate::commands::audit::project_build(&resolved, &fx);
                         last_cmd_result = Some(cmd_result_from_anyhow(r, &fx));
                         last_result = None;
                     }
                     ScenarioStep::RunAuditProjectClean { project_dir } => {
                         let resolved = project_dir.resolve(home);
-                        let fx = CannedEffects::new();
+                        let fx = CapturingRealEffects::new();
                         let r = crate::commands::audit::project_clean(&resolved, &fx);
                         last_cmd_result = Some(cmd_result_from_anyhow(r, &fx));
                         last_result = None;
                     }
                     ScenarioStep::RunAuditProjectRun { project_dir } => {
                         let resolved = project_dir.resolve(home);
-                        let fx = CannedEffects::new();
+                        let fx = CapturingRealEffects::new();
                         let r = crate::commands::audit::project_run(&resolved, home, &fx);
                         last_cmd_result = Some(cmd_result_from_anyhow(r, &fx));
                         last_result = None;
@@ -170,7 +299,7 @@ mod tests {
                         let yaml_path = tmp.path().join("__install").join(config_name);
                         std::fs::create_dir_all(yaml_path.parent().unwrap()).unwrap();
                         std::fs::write(&yaml_path, yaml_content).unwrap();
-                        let fx = CannedEffects::new();
+                        let fx = CapturingRealEffects::new();
                         let r = crate::commands::audit::install_config(
                             &yaml_path.to_string_lossy(),
                             home,

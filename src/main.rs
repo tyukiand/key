@@ -15,7 +15,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use cli::{AuditCommand, Cli, Command, UserCommand};
-use effects::{Effects, RealEffects};
+use effects::{Effects, RealEffects, RealOsEffects};
 use mutation::MutationToken;
 
 fn main() {
@@ -27,7 +27,12 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    // Spec/0016 §A.4 — single injection point. RealEffects covers the
+    // user-facing surface (println / prompt / FS porcelain); RealOsEffects
+    // is the capability handle threaded into Project::run_tests and the
+    // future-proof migration path for everything that touches the OS.
     let fx = RealEffects;
+    let os = RealOsEffects;
 
     // Audit commands don't need SSH or key state
     if let Command::Audit { ref command } = cli.command {
@@ -38,7 +43,7 @@ fn run() -> Result<()> {
         return match command {
             None => commands::audit::dispatch_pick(&home, &fx),
             Some(AuditCommand::Project(ref proj_cmd)) => {
-                commands::audit::dispatch_project(proj_cmd, &home, &fx)
+                commands::audit::dispatch_project(proj_cmd, &home, &fx, &os)
             }
             Some(ref cmd) => commands::audit::dispatch(cmd, &home, &fx),
         };

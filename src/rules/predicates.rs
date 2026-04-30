@@ -314,12 +314,15 @@ pub fn evaluate_predicate_subject(
 }
 
 fn read_subject_text(subject: &Subject<'_>) -> Result<String, String> {
+    use crate::effects::{OsEffectsRo, RealOsEffects};
     match subject {
         Subject::Concrete(p) => {
-            if !p.exists() {
+            let os = RealOsEffects;
+            if !os.path_exists(p) {
                 return Err(format!("file does not exist: {}", p.display()));
             }
-            std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {}", p.display(), e))
+            os.read_to_string(p)
+                .map_err(|e| format!("cannot read {}: {}", p.display(), e))
         }
         Subject::Pseudo(_, snap) => Ok(snap.body.clone()),
     }

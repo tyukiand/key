@@ -237,6 +237,20 @@ pub enum ProjectCommand {
         #[arg(long)]
         home: Option<String>,
     },
+
+    /// Interactive fdisk-style editor for an audit project (spec/0016 §B.2)
+    #[command(name = "edit")]
+    Edit {
+        /// Path to the project directory
+        dir: String,
+    },
+
+    /// List controls / fixtures / test entries in a project
+    #[command(name = "list")]
+    List {
+        /// Path to the project directory
+        dir: String,
+    },
 }
 
 /// Mutable fields that can be changed with `key amend`.

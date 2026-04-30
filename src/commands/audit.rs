@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::cli::{AuditCommand, ProjectCommand};
-use crate::effects::Effects;
+use crate::effects::{Effects, OsEffectsRw};
 use crate::rules::ast::{ControlFile, RuleFailure, TestExpectation};
 use crate::rules::evaluate::{evaluate, evaluate_with_ctx};
 use crate::rules::fixture::parse_fixture_collect_warnings;
@@ -15,11 +15,27 @@ pub fn dispatch(cmd: &AuditCommand, home_dir: &Path, fx: &dyn Effects) -> Result
     match cmd {
         AuditCommand::Run {
             file,
-            ignore,
-            warn_only,
-        } => run_audit(file, home_dir, ignore, warn_only, fx),
-        AuditCommand::New { yaml_path } => new_audit(yaml_path, fx),
-        AuditCommand::Add { yaml_path } => add_control(yaml_path, fx),
+            ignore: _,
+            warn_only: _,
+        } => {
+            // spec/0016 §B.6 — `key audit run <dir>` is now a thin shortcut
+            // for `key audit project run <dir>`; the legacy single-file
+            // `--file <yaml>` form is gone.
+            let p = Path::new(file);
+            if p.is_dir() {
+                project_run(p, home_dir, fx)
+            } else {
+                bail!(
+                    "spec/0016 §B.1: single-file `key audit run --file <yaml>` was removed.\n  \
+                     Use a project: `key audit run <project-dir>` (alias for \
+                     `key audit project run <dir>`).\n  \
+                     (Attempted: {})",
+                    file,
+                )
+            }
+        }
+        AuditCommand::New { yaml_path } => migrated_new(yaml_path),
+        AuditCommand::Add { yaml_path } => migrated_add(yaml_path),
         AuditCommand::Guide {
             verbose,
             feature,
@@ -37,38 +53,76 @@ pub fn dispatch(cmd: &AuditCommand, home_dir: &Path, fx: &dyn Effects) -> Result
             expect_num_failures,
             fx,
         ),
-        AuditCommand::List { yaml_path, short } => list_controls(yaml_path, *short, fx),
-        AuditCommand::Delete { file, id } => delete_control(file, id.as_deref(), fx),
+        AuditCommand::List { yaml_path, short } => migrated_list(yaml_path, *short),
+        AuditCommand::Delete { file, id } => migrated_delete(file, id.as_deref()),
         AuditCommand::Install { yaml_path } => install_config(yaml_path, home_dir, fx),
         AuditCommand::Project(_) => unreachable!("handled in main.rs"),
     }
 }
 
-fn load_control_file(yaml_path: &str) -> Result<ControlFile> {
-    let content = std::fs::read_to_string(yaml_path)
+/// spec/0016 §B.1 — `key audit add <file.yaml>` is removed.
+fn migrated_add(yaml_path: &str) -> Result<()> {
+    bail!(
+        "`key audit add <file.yaml>` was removed in spec/0016.\n\
+         Single-file audit files are no longer supported. Instead:\n  \
+         `key audit project edit <dir>`   then `ac` in the fdisk-style menu \
+         to add a control.\n\
+         (Attempted: {})",
+        yaml_path,
+    )
+}
+
+/// spec/0016 §B.1 — `key audit list <file.yaml>` is removed.
+fn migrated_list(yaml_path: &str, _short: bool) -> Result<()> {
+    bail!(
+        "`key audit list <file.yaml>` was removed in spec/0016.\n\
+         Single-file audit files are no longer supported. Instead:\n  \
+         `key audit project list <dir>` to list controls / fixtures / tests \
+         in a project,\n  \
+         or `key audit project edit <dir>` then `l` in the fdisk-style menu.\n\
+         (Attempted: {})",
+        yaml_path,
+    )
+}
+
+/// spec/0016 §B.1 — `key audit delete --file <file.yaml>` is removed.
+fn migrated_delete(file: &str, _id: Option<&str>) -> Result<()> {
+    bail!(
+        "`key audit delete --file <file.yaml>` was removed in spec/0016.\n\
+         Single-file audit files are no longer supported. Instead:\n  \
+         `key audit project edit <dir>`   then `dc` in the fdisk-style menu \
+         to delete a control.\n\
+         (Attempted: {})",
+        file,
+    )
+}
+
+fn load_control_file(yaml_path: &str, fx: &dyn Effects) -> Result<ControlFile> {
+    let content = fx
+        .read_file_string(Path::new(yaml_path))
         .with_context(|| format!("Cannot read audit file: {}", yaml_path))?;
     if content.trim().is_empty() {
         bail!(
             "Audit file is empty: {}\n\
-             Use `key audit new {}` to create a valid empty audit file, \
-             then add controls with `key audit add {}`.",
+             This single-file form has been removed in spec/0016. \
+             Create a project with `key audit project new <name>` \
+             and edit it via `key audit project edit <dir>`.",
             yaml_path,
-            yaml_path,
-            yaml_path
         );
     }
     parse_control_file(&content).with_context(|| format!("Invalid audit file: {}", yaml_path))
 }
 
-fn new_audit(yaml_path: &str, fx: &dyn Effects) -> Result<()> {
-    if std::path::Path::new(yaml_path).exists() {
-        bail!("File already exists: {}", yaml_path);
-    }
-    let empty = generate_control_file(&ControlFile { controls: vec![] });
-    std::fs::write(yaml_path, &empty)
-        .with_context(|| format!("Cannot write audit file: {}", yaml_path))?;
-    fx.println(&format!("Created empty audit file: {}", yaml_path));
-    Ok(())
+/// spec/0016 §B.1 — `key audit new <single-file.yaml>` is removed.
+fn migrated_new(yaml_path: &str) -> Result<()> {
+    bail!(
+        "`key audit new <file.yaml>` was removed in spec/0016.\n\
+         Single-file audit files are no longer supported. Instead:\n  \
+         `key audit project new <name>`   to create a project,\n  \
+         `key audit project edit <dir>`   to edit it interactively.\n\
+         (Attempted: {})",
+        yaml_path,
+    )
 }
 
 fn run_audit(
@@ -78,7 +132,7 @@ fn run_audit(
     warn_only: &[String],
     fx: &dyn Effects,
 ) -> Result<()> {
-    let cf = load_control_file(yaml_path)?;
+    let cf = load_control_file(yaml_path, fx)?;
     let mut total_pass = 0usize;
     let mut total_fail = 0usize;
     let mut total_warn = 0usize;
@@ -228,8 +282,12 @@ fn guide(
     if let Some(out_dir) = emit_project_dir {
         // Spec/0013 §B.1 — materialize a full audit-project layout under
         // <out_dir> from the same EDSL tree the guide renders.
-        let summary =
-            crate::guide_edsl::emit_project::emit_project(&to_render, mode, Path::new(out_dir))?;
+        let summary = crate::guide_edsl::emit_project::emit_project(
+            &to_render,
+            mode,
+            Path::new(out_dir),
+            fx,
+        )?;
         fx.println(&format!(
             "Emitted audit project to {} \
              ({} control(s), {} fixture(s), {} test entry(ies))",
@@ -243,36 +301,6 @@ fn guide(
     Ok(())
 }
 
-fn add_control(yaml_path: &str, fx: &dyn Effects) -> Result<()> {
-    let new_control = crate::rules::interactive::run_interactive_add_control(fx)?;
-
-    let cf = if std::path::Path::new(yaml_path).exists() {
-        let mut existing = load_control_file(yaml_path)?;
-        // Check ID uniqueness
-        for c in &existing.controls {
-            if c.id == new_control.id {
-                bail!(
-                    "Control ID {:?} already exists in {}",
-                    new_control.id,
-                    yaml_path
-                );
-            }
-        }
-        existing.controls.push(new_control);
-        existing
-    } else {
-        ControlFile {
-            controls: vec![new_control],
-        }
-    };
-
-    let yaml_str = generate_control_file(&cf);
-    std::fs::write(yaml_path, &yaml_str)
-        .with_context(|| format!("Cannot write audit file: {}", yaml_path))?;
-    fx.println(&format!("Control written to {}", yaml_path));
-    Ok(())
-}
-
 fn test(
     yaml_path: &str,
     fake_home: &str,
@@ -280,7 +308,7 @@ fn test(
     expect_num_failures: &Option<usize>,
     fx: &dyn Effects,
 ) -> Result<()> {
-    let cf = load_control_file(yaml_path)?;
+    let cf = load_control_file(yaml_path, fx)?;
     let home = Path::new(fake_home);
     if !home.is_dir() {
         bail!("Fake home directory does not exist: {}", fake_home);
@@ -356,57 +384,9 @@ fn test(
     }
 }
 
-fn list_controls(yaml_path: &str, short: bool, fx: &dyn Effects) -> Result<()> {
-    let cf = load_control_file(yaml_path)?;
-    if cf.controls.is_empty() {
-        fx.println("No controls defined.");
-        return Ok(());
-    }
-    for control in &cf.controls {
-        if short {
-            fx.println(&format!("[{}] {}", control.id, control.title));
-        } else {
-            fx.println(&format!("[{}] {}", control.id, control.title));
-            fx.println(&format!("  Description: {}", control.description));
-            fx.println(&format!("  Remediation: {}", control.remediation));
-            fx.println("");
-        }
-    }
-    Ok(())
-}
-
-fn delete_control(yaml_path: &str, id: Option<&str>, fx: &dyn Effects) -> Result<()> {
-    let mut cf = load_control_file(yaml_path)?;
-    if cf.controls.is_empty() {
-        bail!("No controls to delete in {}", yaml_path);
-    }
-
-    let idx = match id {
-        Some(id_str) => cf
-            .controls
-            .iter()
-            .position(|c| c.id == id_str)
-            .ok_or_else(|| anyhow::anyhow!("Control ID {:?} not found in {}", id_str, yaml_path))?,
-        None => {
-            let items: Vec<String> = cf
-                .controls
-                .iter()
-                .map(|c| format!("[{}] {}", c.id, c.title))
-                .collect();
-            fx.pick_from_list("Select control to delete", &items)?
-        }
-    };
-
-    let removed = cf.controls.remove(idx);
-    let yaml_str = generate_control_file(&cf);
-    std::fs::write(yaml_path, &yaml_str)
-        .with_context(|| format!("Cannot write audit file: {}", yaml_path))?;
-    fx.println(&format!(
-        "Deleted control: [{}] {}",
-        removed.id, removed.title
-    ));
-    Ok(())
-}
+// (Removed in spec/0016 §B.1: list_controls, delete_control, add_control —
+// replaced by `key audit project edit` fdisk-style menu and exit-non-zero
+// migration messages on the old subcommands.)
 
 // ---------------------------------------------------------------------------
 // Phase 4: install + pick
@@ -414,17 +394,17 @@ fn delete_control(yaml_path: &str, id: Option<&str>, fx: &dyn Effects) -> Result
 
 pub fn install_config(yaml_path: &str, home_dir: &Path, fx: &dyn Effects) -> Result<()> {
     // Validate the file parses
-    let _cf = load_control_file(yaml_path)?;
+    let _cf = load_control_file(yaml_path, fx)?;
 
     let configs_dir = home_dir.join(".key/audit-configs");
-    std::fs::create_dir_all(&configs_dir)
+    fx.create_dir_all(&configs_dir)
         .with_context(|| format!("Cannot create {}", configs_dir.display()))?;
 
     let file_name = std::path::Path::new(yaml_path)
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine file name from: {}", yaml_path))?;
     let dest = configs_dir.join(file_name);
-    std::fs::copy(yaml_path, &dest)
+    fx.copy_file(Path::new(yaml_path), &dest)
         .with_context(|| format!("Cannot copy to {}", dest.display()))?;
 
     fx.println(&format!("Installed: {}", dest.display()));
@@ -433,16 +413,15 @@ pub fn install_config(yaml_path: &str, home_dir: &Path, fx: &dyn Effects) -> Res
 
 pub fn dispatch_pick(home_dir: &Path, fx: &dyn Effects) -> Result<()> {
     let configs_dir = home_dir.join(".key/audit-configs");
-    if !configs_dir.is_dir() {
+    if !fx.is_dir(&configs_dir) {
         bail!("No audit configs installed. Use `key audit install <file.yaml>` first.");
     }
 
     let mut yamls: Vec<String> = Vec::new();
-    for entry in std::fs::read_dir(&configs_dir)
+    for name in fx
+        .read_dir_names(&configs_dir)
         .with_context(|| format!("Cannot read {}", configs_dir.display()))?
     {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
         if name.ends_with(".yaml") || name.ends_with(".yml") {
             yamls.push(name);
         }
@@ -466,7 +445,12 @@ pub fn dispatch_pick(home_dir: &Path, fx: &dyn Effects) -> Result<()> {
 // Phase 5: project commands
 // ---------------------------------------------------------------------------
 
-pub fn dispatch_project(cmd: &ProjectCommand, home_dir: &Path, fx: &dyn Effects) -> Result<()> {
+pub fn dispatch_project(
+    cmd: &ProjectCommand,
+    home_dir: &Path,
+    fx: &dyn Effects,
+    os: &dyn OsEffectsRw,
+) -> Result<()> {
     match cmd {
         ProjectCommand::New { name } => project_new(name, fx),
         ProjectCommand::Test => project_test(&std::env::current_dir()?, fx),
@@ -479,7 +463,48 @@ pub fn dispatch_project(cmd: &ProjectCommand, home_dir: &Path, fx: &dyn Effects)
             };
             project_run(&std::env::current_dir()?, &home_path, fx)
         }
+        // Spec/0016 §B.2-§B.3 — fdisk-style interactive editor.
+        ProjectCommand::Edit { dir } => {
+            crate::commands::project_edit::project_edit(Path::new(dir), fx, os)
+        }
+        ProjectCommand::List { dir } => project_list(Path::new(dir), fx),
     }
+}
+
+/// Spec/0016 §B.2 — `key audit project list <dir>`: show controls, fixtures
+/// and test entries one section each, names only.
+pub fn project_list(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
+    let project = crate::project::Project::load_from_dir(project_dir, fx)?;
+    fx.println("Controls:");
+    if project.controls.is_empty() {
+        fx.println("  (none)");
+    } else {
+        for (file, cf) in &project.controls {
+            for c in &cf.controls {
+                fx.println(&format!("  {} (in {}.yaml)", c.id, file.as_str()));
+            }
+        }
+    }
+    fx.println("Fixtures:");
+    if project.fixtures.is_empty() {
+        fx.println("  (none)");
+    } else {
+        for name in project.fixtures.keys() {
+            fx.println(&format!("  {}", name.as_str()));
+        }
+    }
+    fx.println("Test entries:");
+    if project.tests.inner.test_suites.is_empty() {
+        fx.println("  (none)");
+    } else {
+        for suite in &project.tests.inner.test_suites {
+            fx.println(&format!("  [{}]", suite.name));
+            for tc in &suite.tests {
+                fx.println(&format!("    {} on {}", tc.control_id, tc.fixture));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn project_new(name: &str, fx: &dyn Effects) -> Result<()> {
@@ -492,7 +517,7 @@ pub fn project_new(name: &str, fx: &dyn Effects) -> Result<()> {
     }
 
     let base = PathBuf::from(name);
-    if base.exists() {
+    if fx.path_exists(&base) {
         bail!("Directory already exists: {}", name);
     }
 
@@ -500,15 +525,15 @@ pub fn project_new(name: &str, fx: &dyn Effects) -> Result<()> {
     let test_dir = base.join("src/test");
     let resources_dir = test_dir.join("resources");
 
-    std::fs::create_dir_all(&main_dir)
+    fx.create_dir_all(&main_dir)
         .with_context(|| format!("Cannot create {}", main_dir.display()))?;
-    std::fs::create_dir_all(&resources_dir)
+    fx.create_dir_all(&resources_dir)
         .with_context(|| format!("Cannot create {}", resources_dir.display()))?;
 
     // Write empty control file
     let empty_cf = generate_control_file(&ControlFile { controls: vec![] });
     let cf_path = main_dir.join(format!("{}.yaml", name));
-    std::fs::write(&cf_path, &empty_cf)
+    fx.write_file(&cf_path, empty_cf.as_bytes())
         .with_context(|| format!("Cannot write {}", cf_path.display()))?;
 
     // Write empty test file
@@ -516,11 +541,11 @@ pub fn project_new(name: &str, fx: &dyn Effects) -> Result<()> {
         test_suites: vec![],
     });
     let tf_path = test_dir.join("tests.yaml");
-    std::fs::write(&tf_path, &empty_tf)
+    fx.write_file(&tf_path, empty_tf.as_bytes())
         .with_context(|| format!("Cannot write {}", tf_path.display()))?;
 
     // Write .gitignore
-    std::fs::write(base.join(".gitignore"), "target/\n")
+    fx.write_file(&base.join(".gitignore"), b"target/\n")
         .with_context(|| "Cannot write .gitignore")?;
 
     fx.println(&format!("Created audit project: {}", name));
@@ -528,17 +553,15 @@ pub fn project_new(name: &str, fx: &dyn Effects) -> Result<()> {
 }
 
 /// Find the single main YAML control file in src/main/.
-fn find_main_yaml(project_dir: &Path) -> Result<PathBuf> {
+fn find_main_yaml(project_dir: &Path, fx: &dyn Effects) -> Result<PathBuf> {
     let main_dir = project_dir.join("src/main");
-    if !main_dir.is_dir() {
+    if !fx.is_dir(&main_dir) {
         bail!("Not an audit project: src/main/ not found");
     }
     let mut yamls = Vec::new();
-    for entry in std::fs::read_dir(&main_dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
+    for name in fx.read_dir_names(&main_dir)? {
         if name.ends_with(".yaml") || name.ends_with(".yml") {
-            yamls.push(entry.path());
+            yamls.push(main_dir.join(&name));
         }
     }
     if yamls.is_empty() {
@@ -557,8 +580,8 @@ pub fn project_test(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
     // Spec/0015 §5: load through the Project ADT — single source of truth
     // for project structure. The existing per-suite iteration UX is preserved
     // by iterating the loaded Project's test_suites directly.
-    let project = crate::project::Project::load_from_dir(project_dir)?;
-    let _ = find_main_yaml(project_dir)?; // legacy single-yaml structural check
+    let project = crate::project::Project::load_from_dir(project_dir, fx)?;
+    let _ = find_main_yaml(project_dir, fx)?; // legacy single-yaml structural check
     let cf = crate::rules::ast::ControlFile {
         controls: project
             .all_controls()
@@ -608,8 +631,9 @@ pub fn project_test(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
             // dir if `pseudo-file-overrides.yaml` is present. Without
             // overrides, fall through to the legacy real-env behavior.
             let overrides_path = fixture_dir.join("pseudo-file-overrides.yaml");
-            let eval_result = if overrides_path.is_file() {
-                let yaml = std::fs::read_to_string(&overrides_path)
+            let eval_result = if fx.is_file(&overrides_path) {
+                let yaml = fx
+                    .read_file_string(&overrides_path)
                     .with_context(|| format!("reading {}", overrides_path.display()))?;
                 let (fixture, _warnings) = parse_fixture_collect_warnings(&yaml)
                     .with_context(|| format!("parsing {}", overrides_path.display()))?;
@@ -699,15 +723,16 @@ pub fn project_test(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
 }
 
 pub fn project_build(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
-    let main_yaml = find_main_yaml(project_dir)?;
+    let main_yaml = find_main_yaml(project_dir, fx)?;
 
     // Parse-check main yaml
-    let _cf = load_control_file(&main_yaml.to_string_lossy())?;
+    let _cf = load_control_file(&main_yaml.to_string_lossy(), fx)?;
 
     // Parse-check tests.yaml
     let tests_path = project_dir.join("src/test/tests.yaml");
-    if tests_path.exists() {
-        let tests_content = std::fs::read_to_string(&tests_path)
+    if fx.path_exists(&tests_path) {
+        let tests_content = fx
+            .read_file_string(&tests_path)
             .with_context(|| format!("Cannot read {}", tests_path.display()))?;
         let _tf = parse_test_file(&tests_content)
             .with_context(|| format!("Invalid test file: {}", tests_path.display()))?;
@@ -718,10 +743,10 @@ pub fn project_build(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
 
     // Copy to target/
     let target_dir = project_dir.join("target");
-    std::fs::create_dir_all(&target_dir)
+    fx.create_dir_all(&target_dir)
         .with_context(|| format!("Cannot create {}", target_dir.display()))?;
     let dest = target_dir.join(main_yaml.file_name().unwrap());
-    std::fs::copy(&main_yaml, &dest)
+    fx.copy_file(&main_yaml, &dest)
         .with_context(|| format!("Cannot copy to {}", dest.display()))?;
 
     fx.println(&format!("Build output: {}", dest.display()));
@@ -730,8 +755,8 @@ pub fn project_build(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
 
 pub fn project_clean(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
     let target_dir = project_dir.join("target");
-    if target_dir.is_dir() {
-        std::fs::remove_dir_all(&target_dir)
+    if fx.is_dir(&target_dir) {
+        fx.remove_dir_all(&target_dir)
             .with_context(|| format!("Cannot remove {}", target_dir.display()))?;
         fx.println("Cleaned target/");
     } else {
@@ -743,8 +768,8 @@ pub fn project_clean(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
 pub fn project_run(project_dir: &Path, home_dir: &Path, fx: &dyn Effects) -> Result<()> {
     // Spec/0015 §5: route over Project methods. Behavior preserved: same
     // PASS/FAIL prints, same exit semantics.
-    let _ = find_main_yaml(project_dir)?;
-    let project = crate::project::Project::load_from_dir(project_dir)?;
+    let _ = find_main_yaml(project_dir, fx)?;
+    let project = crate::project::Project::load_from_dir(project_dir, fx)?;
     let mut has_failure = false;
     let mut total_pass = 0usize;
     let mut total_fail = 0usize;
@@ -786,6 +811,41 @@ pub fn project_run(project_dir: &Path, home_dir: &Path, fx: &dyn Effects) -> Res
 mod tests {
     use super::*;
     use crate::guide_edsl::features::Feature;
+
+    /// Spec/0016 §B.1 — every removed single-file subcommand exits non-zero
+    /// with a clear migration message naming `key audit project edit`.
+    #[test]
+    fn migrated_add_bails_with_message() {
+        let err = migrated_add("/some/file.yaml").unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("key audit add"), "got: {}", msg);
+        assert!(msg.contains("project edit"), "got: {}", msg);
+        assert!(msg.contains("removed in spec/0016"), "got: {}", msg);
+    }
+
+    #[test]
+    fn migrated_delete_bails_with_message() {
+        let err = migrated_delete("/some/file.yaml", None).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("key audit delete"), "got: {}", msg);
+        assert!(msg.contains("project edit"), "got: {}", msg);
+    }
+
+    #[test]
+    fn migrated_list_bails_with_message() {
+        let err = migrated_list("/some/file.yaml", false).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("key audit list"), "got: {}", msg);
+        assert!(msg.contains("project list"), "got: {}", msg);
+    }
+
+    #[test]
+    fn migrated_new_bails_with_message() {
+        let err = migrated_new("/some/file.yaml").unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("key audit new"), "got: {}", msg);
+        assert!(msg.contains("project new"), "got: {}", msg);
+    }
 
     /// Spec/0012 §3.1 / §4.3 — did-you-mean: stripped-prefix-and-suffix
     /// substring of the typed id matches a known short canonical id.

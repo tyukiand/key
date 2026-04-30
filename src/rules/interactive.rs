@@ -1,3 +1,9 @@
+// spec/0016 §B.1 — single-file `key audit add` is removed. The interactive
+// add-control logic in this module is now dead code, kept only because some
+// of its tests exercise generic helpers (Lexical resolution, fuzzy matching)
+// that remain useful as regression coverage. Suppress unused warnings.
+#![allow(dead_code)]
+
 use anyhow::{bail, Result};
 
 use crate::effects::Effects;

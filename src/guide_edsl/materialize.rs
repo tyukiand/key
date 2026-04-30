@@ -9,6 +9,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use super::nodes::{ExampleExpect, GuideNode};
+use crate::effects::Effects;
 
 /// One materialized worked example. The harness loads `yaml` as a control
 /// file, evaluates it against an empty home directory, and asserts that the
@@ -33,12 +34,13 @@ pub struct MaterializedFixture {
 pub fn materialize_into(
     root: &GuideNode,
     out_dir: &Path,
+    fx: &dyn Effects,
 ) -> Result<(Vec<MaterializedControl>, Vec<MaterializedFixture>)> {
     let controls_dir = out_dir.join("controls");
     let fixtures_dir = out_dir.join("tests").join("fixtures");
-    std::fs::create_dir_all(&controls_dir)
+    fx.create_dir_all(&controls_dir)
         .with_context(|| format!("create {}", controls_dir.display()))?;
-    std::fs::create_dir_all(&fixtures_dir)
+    fx.create_dir_all(&fixtures_dir)
         .with_context(|| format!("create {}", fixtures_dir.display()))?;
 
     let mut controls = Vec::new();
@@ -51,6 +53,7 @@ pub fn materialize_into(
         &mut counter,
         &mut controls,
         &mut fixtures,
+        fx,
     )?;
     Ok((controls, fixtures))
 }
@@ -62,18 +65,28 @@ fn walk(
     counter: &mut usize,
     controls: &mut Vec<MaterializedControl>,
     fixtures: &mut Vec<MaterializedFixture>,
+    fx: &dyn Effects,
 ) -> Result<()> {
     match node {
         GuideNode::Section { body, .. } => {
             for c in body {
-                walk(c, controls_dir, fixtures_dir, counter, controls, fixtures)?;
+                walk(
+                    c,
+                    controls_dir,
+                    fixtures_dir,
+                    counter,
+                    controls,
+                    fixtures,
+                    fx,
+                )?;
             }
         }
         GuideNode::ExampleControl { yaml, expect, .. } => {
             *counter += 1;
             let name = format!("ex-{:03}.yaml", *counter);
             let path = controls_dir.join(&name);
-            std::fs::write(&path, yaml).with_context(|| format!("write {}", path.display()))?;
+            fx.write_file(&path, yaml.as_bytes())
+                .with_context(|| format!("write {}", path.display()))?;
             controls.push(MaterializedControl {
                 yaml_path: path,
                 yaml: yaml.to_string(),
@@ -82,7 +95,8 @@ fn walk(
         }
         GuideNode::ExampleFixture { name, yaml, .. } => {
             let path = fixtures_dir.join(format!("{}.yaml", name));
-            std::fs::write(&path, yaml).with_context(|| format!("write {}", path.display()))?;
+            fx.write_file(&path, yaml.as_bytes())
+                .with_context(|| format!("write {}", path.display()))?;
             fixtures.push(MaterializedFixture {
                 fixture_path: path,
                 yaml: yaml.to_string(),
@@ -107,7 +121,8 @@ mod tests {
     fn materialized_project_round_trip() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let r = root();
-        let (controls, fixtures) = materialize_into(&r, tmp.path()).expect("materialize");
+        let fx = crate::effects::RealEffects;
+        let (controls, fixtures) = materialize_into(&r, tmp.path(), &fx).expect("materialize");
         assert!(
             !controls.is_empty(),
             "expected the EDSL to materialize at least one ExampleControl"

@@ -13,10 +13,11 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 
+use crate::effects::{Effects, OsEffectsRw};
 use crate::rules::ast::{
     Control, ControlFile, PseudoFileFixture, RuleFailure, TestCase, TestFile, TestSuite,
 };
@@ -460,9 +461,12 @@ impl Project {
 impl Project {
     /// Load a Project from an audit-project directory laid out under
     /// `<dir>/src/{main,test/resources}` plus `<dir>/src/test/tests.yaml`.
-    pub fn load_from_dir(dir: &Path) -> Result<Project> {
+    ///
+    /// All filesystem touchpoints route through the supplied `Effects` handle
+    /// (spec/0016 §A.5).
+    pub fn load_from_dir(dir: &Path, fx: &dyn Effects) -> Result<Project> {
         let main_dir = dir.join("src/main");
-        if !main_dir.is_dir() {
+        if !fx.is_dir(&main_dir) {
             bail!(
                 "not an audit project (missing src/main/): {}",
                 dir.display()
@@ -470,23 +474,22 @@ impl Project {
         }
 
         let mut controls: BTreeMap<ControlFileName, ControlFile> = BTreeMap::new();
-        for entry in std::fs::read_dir(&main_dir)
+        for entry in fx
+            .read_dir_entries(&main_dir)
             .with_context(|| format!("reading {}", main_dir.display()))?
         {
-            let entry = entry?;
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-            let stem = if let Some(s) = name.strip_suffix(".yaml") {
+            let stem = if let Some(s) = entry.name.strip_suffix(".yaml") {
                 s
-            } else if let Some(s) = name.strip_suffix(".yml") {
+            } else if let Some(s) = entry.name.strip_suffix(".yml") {
                 s
             } else {
                 continue;
             };
-            let content = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
+            let content = fx
+                .read_file_string(&entry.path)
+                .with_context(|| format!("reading {}", entry.path.display()))?;
             let cf = parse_control_file(&content)
-                .with_context(|| format!("parsing {}", path.display()))?;
+                .with_context(|| format!("parsing {}", entry.path.display()))?;
             let cfn = ControlFileName::new(stem).map_err(|e| anyhow!(e))?;
             if controls.contains_key(&cfn) {
                 bail!("duplicate control file name (case-insensitive): {:?}", stem);
@@ -495,8 +498,9 @@ impl Project {
         }
 
         let tests_path = dir.join("src/test/tests.yaml");
-        let tests = if tests_path.is_file() {
-            let content = std::fs::read_to_string(&tests_path)
+        let tests = if fx.is_file(&tests_path) {
+            let content = fx
+                .read_file_string(&tests_path)
                 .with_context(|| format!("reading {}", tests_path.display()))?;
             let tf = parse_test_file(&content)
                 .with_context(|| format!("parsing {}", tests_path.display()))?;
@@ -507,19 +511,21 @@ impl Project {
 
         let mut fixtures: BTreeMap<FixtureFileName, FixtureFile> = BTreeMap::new();
         let resources_dir = dir.join("src/test/resources");
-        if resources_dir.is_dir() {
-            for entry in std::fs::read_dir(&resources_dir)
+        if fx.is_dir(&resources_dir) {
+            for entry in fx
+                .read_dir_entries(&resources_dir)
                 .with_context(|| format!("reading {}", resources_dir.display()))?
             {
-                let entry = entry?;
-                if !entry.file_type()?.is_dir() {
+                if !entry.is_dir {
                     continue;
                 }
-                let name = entry.file_name().to_string_lossy().to_string();
-                let fxn = FixtureFileName::new(&name).map_err(|e| anyhow!(e))?;
-                let ff = load_fixture_dir(&entry.path())?;
+                let fxn = FixtureFileName::new(&entry.name).map_err(|e| anyhow!(e))?;
+                let ff = load_fixture_dir(&entry.path, fx)?;
                 if fixtures.contains_key(&fxn) {
-                    bail!("duplicate fixture name (case-insensitive): {:?}", name);
+                    bail!(
+                        "duplicate fixture name (case-insensitive): {:?}",
+                        entry.name
+                    );
                 }
                 fixtures.insert(fxn, ff);
             }
@@ -539,43 +545,47 @@ impl Project {
 
     /// Materialize the project to disk under `<dir>` using the same layout
     /// `Project::load_from_dir` accepts. Creates directories as needed.
-    pub fn write_to_dir(&self, dir: &Path) -> Result<()> {
+    pub fn write_to_dir(&self, dir: &Path, fx: &dyn Effects) -> Result<()> {
         let main_dir = dir.join("src/main");
-        std::fs::create_dir_all(&main_dir)
+        fx.create_dir_all(&main_dir)
             .with_context(|| format!("creating {}", main_dir.display()))?;
         for (name, cf) in &self.controls {
             let path = main_dir.join(format!("{}.yaml", name.as_str()));
-            std::fs::write(&path, generate_control_file(cf))
+            fx.write_file(&path, generate_control_file(cf).as_bytes())
                 .with_context(|| format!("writing {}", path.display()))?;
         }
 
         let test_dir = dir.join("src/test");
-        std::fs::create_dir_all(&test_dir)
+        fx.create_dir_all(&test_dir)
             .with_context(|| format!("creating {}", test_dir.display()))?;
         let tests_path = test_dir.join("tests.yaml");
-        std::fs::write(&tests_path, generate_test_file(&self.tests.inner))
-            .with_context(|| format!("writing {}", tests_path.display()))?;
+        fx.write_file(
+            &tests_path,
+            generate_test_file(&self.tests.inner).as_bytes(),
+        )
+        .with_context(|| format!("writing {}", tests_path.display()))?;
 
         let resources_dir = test_dir.join("resources");
-        std::fs::create_dir_all(&resources_dir)
+        fx.create_dir_all(&resources_dir)
             .with_context(|| format!("creating {}", resources_dir.display()))?;
         for (name, ff) in &self.fixtures {
             let fdir = resources_dir.join(name.as_str());
-            std::fs::create_dir_all(&fdir)
+            fx.create_dir_all(&fdir)
                 .with_context(|| format!("creating {}", fdir.display()))?;
             if let Some(po) = &ff.pseudo_overrides {
                 let yaml = serialize_pseudo_overrides(po);
-                std::fs::write(fdir.join("pseudo-file-overrides.yaml"), yaml).with_context(
-                    || format!("writing pseudo-file-overrides.yaml in {}", fdir.display()),
-                )?;
+                fx.write_file(&fdir.join("pseudo-file-overrides.yaml"), yaml.as_bytes())
+                    .with_context(|| {
+                        format!("writing pseudo-file-overrides.yaml in {}", fdir.display())
+                    })?;
             }
             for (rel, body) in &ff.files {
                 let target = fdir.join(rel);
                 if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)
+                    fx.create_dir_all(parent)
                         .with_context(|| format!("creating {}", parent.display()))?;
                 }
-                std::fs::write(&target, body)
+                fx.write_file(&target, body)
                     .with_context(|| format!("writing {}", target.display()))?;
             }
         }
@@ -583,22 +593,23 @@ impl Project {
     }
 }
 
-fn load_fixture_dir(dir: &Path) -> Result<FixtureFile> {
+fn load_fixture_dir(dir: &Path, fx: &dyn Effects) -> Result<FixtureFile> {
     let mut ff = FixtureFile::default();
-    walk_fixture(dir, dir, &mut ff)?;
+    walk_fixture(dir, dir, &mut ff, fx)?;
     Ok(ff)
 }
 
-fn walk_fixture(root: &Path, cur: &Path, ff: &mut FixtureFile) -> Result<()> {
-    for entry in std::fs::read_dir(cur).with_context(|| format!("reading {}", cur.display()))? {
-        let entry = entry?;
-        let p = entry.path();
-        let ty = entry.file_type()?;
-        if ty.is_dir() {
-            walk_fixture(root, &p, ff)?;
+fn walk_fixture(root: &Path, cur: &Path, ff: &mut FixtureFile, fx: &dyn Effects) -> Result<()> {
+    for entry in fx
+        .read_dir_entries(cur)
+        .with_context(|| format!("reading {}", cur.display()))?
+    {
+        let p = entry.path;
+        if entry.is_dir {
+            walk_fixture(root, &p, ff, fx)?;
             continue;
         }
-        if !ty.is_file() {
+        if !entry.is_file {
             continue;
         }
         let rel = p
@@ -607,14 +618,17 @@ fn walk_fixture(root: &Path, cur: &Path, ff: &mut FixtureFile) -> Result<()> {
             .to_string_lossy()
             .to_string();
         if rel == "pseudo-file-overrides.yaml" {
-            let yaml =
-                std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+            let yaml = fx
+                .read_file_string(&p)
+                .with_context(|| format!("reading {}", p.display()))?;
             let (po, _warnings) = parse_fixture_collect_warnings(&yaml)
                 .with_context(|| format!("parsing {}", p.display()))?;
             ff.pseudo_overrides = Some(po);
             continue;
         }
-        let body = std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
+        let body = fx
+            .read_file(&p)
+            .with_context(|| format!("reading {}", p.display()))?;
         ff.files.insert(rel, body);
     }
     Ok(())
@@ -699,9 +713,9 @@ impl Project {
     /// observed. An InMemory subject path on the predicate evaluator is the
     /// long-term cleanup; for now this preserves predicate-evaluator reuse
     /// per spec §1.4 ("only the subject-resolution path differs").
-    pub fn run_tests(&self) -> Result<TestsReport> {
+    pub fn run_tests(&self, os: &dyn OsEffectsRw) -> Result<TestsReport> {
         let mut report = TestsReport::default();
-        let temp = tempdir_unique()?;
+        let temp = os.make_tempdir()?;
         for suite in &self.tests.inner.test_suites {
             for tc in &suite.tests {
                 let control_id = tc.control_id.as_str();
@@ -740,15 +754,16 @@ impl Project {
                         continue;
                     }
                 };
-                // Materialize the fixture under the tempdir.
-                let fixture_dir = temp.join(format!("{}__{}", control_id, tc.fixture));
-                std::fs::create_dir_all(&fixture_dir)?;
+                // Materialize the fixture under the tempdir provided by the
+                // OsEffects backend (in-memory under MockOsEffects).
+                let fixture_dir = temp.path().join(format!("{}__{}", control_id, tc.fixture));
+                os.create_dir_all(&fixture_dir)?;
                 for (rel, body) in &ff.files {
                     let target = fixture_dir.join(rel);
                     if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        os.create_dir_all(parent)?;
                     }
-                    std::fs::write(&target, body)?;
+                    os.write_file(&target, body)?;
                 }
                 let eval_result = match &ff.pseudo_overrides {
                     Some(po) => {
@@ -788,7 +803,8 @@ impl Project {
                 }
             }
         }
-        cleanup_tempdir(&temp);
+        // tempdir cleanup happens at TempDirHandle::drop.
+        drop(temp);
         Ok(report)
     }
 
@@ -860,28 +876,9 @@ fn compare_test(
 }
 
 // ---------------------------------------------------------------------------
-// Tiny tempdir helper (avoids a hard dep on `tempfile` outside dev-deps).
+// (Tempdir helpers were removed in spec/0016 — tempdirs now flow through
+// `OsEffectsRw::make_tempdir`.)
 // ---------------------------------------------------------------------------
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn tempdir_unique() -> Result<PathBuf> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let base = std::env::temp_dir().join(format!("key-project-{}-{}-{}", pid, nanos, n));
-    std::fs::create_dir_all(&base)?;
-    Ok(base)
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn cleanup_tempdir(p: &Path) {
-    let _ = std::fs::remove_dir_all(p);
-}
 
 // ---------------------------------------------------------------------------
 // Project-mutation operations (spec §4.1)
@@ -919,6 +916,19 @@ pub enum ProjectMutation {
         control_id: String,
         fixture: String,
     },
+    /// Spec/0016 §B.5 — observational op: compute TestsReport, print, leave
+    /// project unchanged. Round-trip ignores the printed report; final state
+    /// equality is what matters.
+    RunTests,
+    /// Spec/0016 §B.5 — observational op: compute AuditReport against host
+    /// FS, print, leave project unchanged.
+    RunAudit,
+    /// Spec/0016 §B.5 — observational op: write Project to disk; project
+    /// state in-memory is unchanged. Round-trip ignores the FS side-effect.
+    Write,
+    /// Spec/0016 §B.5 — observational op: quit the dialog without committing
+    /// further mutations. State unchanged.
+    Quit,
     /// Commits the current Project — terminates the dialog.
     Done,
 }
@@ -958,6 +968,11 @@ impl Project {
                 control_id,
                 fixture,
             } => self.with_test_entry_deleted(&suite, &control_id, &fixture),
+            // Spec/0016 §B.5 — observational ops leave Project state untouched.
+            ProjectMutation::RunTests => Ok(self),
+            ProjectMutation::RunAudit => Ok(self),
+            ProjectMutation::Write => Ok(self),
+            ProjectMutation::Quit => Ok(self),
             ProjectMutation::Done => Ok(self),
         }
     }
@@ -970,9 +985,13 @@ impl Project {
     ) -> Result<Project, ProjectMutationError> {
         let mut p = start;
         for op in ops {
-            let done = matches!(op, ProjectMutation::Done);
+            // Spec/0016 §B.5: Done AND Quit terminate the mutation stream.
+            // The remaining ops (RunTests / RunAudit / Write) are observational
+            // pass-throughs but do not stop iteration — round-trip equality
+            // ignores them.
+            let terminates = matches!(op, ProjectMutation::Done | ProjectMutation::Quit);
             p = p.apply_mutation(op)?;
-            if done {
+            if terminates {
                 break;
             }
         }
@@ -1239,10 +1258,13 @@ mod tests {
             )
             .unwrap();
 
-        let dir = tempdir_unique().unwrap();
-        p.write_to_dir(&dir).unwrap();
-        let loaded = Project::load_from_dir(&dir).unwrap();
-        cleanup_tempdir(&dir);
+        use crate::effects::{OsEffectsRw, RealEffects, RealOsEffects};
+        let os = RealOsEffects;
+        let fx = RealEffects;
+        let td = os.make_tempdir().unwrap();
+        let dir = td.path();
+        p.write_to_dir(dir, &fx).unwrap();
+        let loaded = Project::load_from_dir(dir, &fx).unwrap();
 
         assert_eq!(p.controls, loaded.controls);
         assert_eq!(p.tests, loaded.tests);
@@ -1289,7 +1311,8 @@ mod tests {
             )
             .unwrap();
 
-        let report = p.run_tests().unwrap();
+        let os = crate::effects::RealOsEffects;
+        let report = p.run_tests(&os).unwrap();
         assert_eq!(report.passed, 1);
         assert_eq!(report.failed, 0);
     }
@@ -1331,7 +1354,8 @@ mod tests {
             )
             .unwrap();
 
-        let report = p.run_tests().unwrap();
+        let os = crate::effects::RealOsEffects;
+        let report = p.run_tests(&os).unwrap();
         assert_eq!(report.passed, 0);
         assert_eq!(report.failed, 1);
     }
@@ -1376,7 +1400,8 @@ mod tests {
             )
             .unwrap();
 
-        let report = p.run_tests().unwrap();
+        let os = crate::effects::RealOsEffects;
+        let report = p.run_tests(&os).unwrap();
         assert_eq!(report.passed, 1);
         assert_eq!(report.failed, 0);
     }

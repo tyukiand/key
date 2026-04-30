@@ -3,9 +3,10 @@
 mod tests {
     use std::path::PathBuf;
 
+    use crate::effects::{OsEffectsRw, RealOsEffects};
     use crate::rules::scenario::{all_scenarios, ScenarioStep};
     use crate::security::exec::{
-        safe_exec, AllowedCommand, AllowedExecutablePath, AllowedSelfArgs, SafeExecResult,
+        AllowedCommand, AllowedExecutablePath, AllowedSelfArgs, SafeExecResult,
     };
 
     fn bin_path() -> PathBuf {
@@ -16,7 +17,8 @@ mod tests {
     fn run_self(bin: &PathBuf, args: AllowedSelfArgs) -> SafeExecResult {
         let exe = AllowedExecutablePath::new(bin)
             .expect("test binary path must be absolute and free of `..`");
-        safe_exec(AllowedCommand::AuditSelf { binary: exe, args })
+        let os = RealOsEffects;
+        os.safe_exec(AllowedCommand::AuditSelf { binary: exe, args })
     }
 
     #[test]
@@ -47,15 +49,25 @@ mod tests {
                         std::fs::create_dir_all(&resolved).unwrap();
                     }
                     ScenarioStep::RunAuditRun { yaml_content } => {
+                        // spec/0016 §B.1 — single-file `audit run --file` is
+                        // gone. Wrap the scenario YAML in a fresh project
+                        // layout and route through `audit project run`. The
+                        // project shape is the minimum the loader requires:
+                        // src/main/<name>.yaml + an empty src/test/tests.yaml.
                         yaml_counter += 1;
-                        let yaml_path = yaml_dir.join(format!("audit_{}.yaml", yaml_counter));
-                        std::fs::write(&yaml_path, yaml_content).unwrap();
+                        let proj = yaml_dir.join(format!("proj_{}", yaml_counter));
+                        let main = proj.join("src/main");
+                        let test = proj.join("src/test");
+                        std::fs::create_dir_all(&main).unwrap();
+                        std::fs::create_dir_all(test.join("resources")).unwrap();
+                        std::fs::write(main.join("audit.yaml"), yaml_content).unwrap();
+                        std::fs::write(test.join("tests.yaml"), b"test-suites: []\n").unwrap();
 
                         let result = run_self(
                             &bin,
-                            AllowedSelfArgs::AuditRunFile {
+                            AllowedSelfArgs::AuditProjectRun {
                                 home: home.to_path_buf(),
-                                yaml: yaml_path,
+                                project_dir: proj,
                             },
                         );
                         last_output = Some(result);

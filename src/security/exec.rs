@@ -496,7 +496,7 @@ pub enum AllowedCommand {
 }
 
 impl AllowedCommand {
-    fn variant_name(&self) -> &'static str {
+    pub fn variant_name(&self) -> &'static str {
         match self {
             Self::Which { .. } => "Which",
             Self::SshKeygenGenerate { .. } => "SshKeygenGenerate",
@@ -699,11 +699,15 @@ fn plan(cmd: &AllowedCommand) -> ExecPlan {
     }
 }
 
-/// The single funnel for all external-process invocation.
+/// The single funnel for all external-process invocation — internal to the
+/// security kernel. Public callers must go through
+/// `OsEffectsRw::safe_exec` (spec/0016 §A.1). This function is `pub(crate)`
+/// only so that the `RealOsEffects` impl in `src/effects/os.rs` can delegate
+/// to it; the spec/0014 invariant (every `Command::new` lives in
+/// `src/security/`) is preserved.
 ///
-/// This is the *only* place in the crate that may call
-/// `std::process::Command`. Enforced by `tests/no_direct_exec.rs`.
-pub fn safe_exec(cmd: AllowedCommand) -> SafeExecResult {
+/// Enforced by `tests/no_direct_exec.rs`.
+pub(crate) fn safe_exec_impl(cmd: AllowedCommand) -> SafeExecResult {
     let summary = cmd.variant_name().to_string();
     debug_log(&summary);
 
@@ -1116,7 +1120,7 @@ mod tests {
     fn safe_exec_runs_which_for_known_program() {
         // sh is essentially always on PATH on any unix-y CI box; if /bin/sh
         // doesn't exist this test is moot anyway.
-        let r = safe_exec(AllowedCommand::Which {
+        let r = safe_exec_impl(AllowedCommand::Which {
             exe: AllowedExecutableName::new("sh").unwrap(),
         });
         assert_eq!(r.command_summary, "Which");
@@ -1125,7 +1129,7 @@ mod tests {
 
     #[test]
     fn safe_exec_which_unknown_program_fails() {
-        let r = safe_exec(AllowedCommand::Which {
+        let r = safe_exec_impl(AllowedCommand::Which {
             exe: AllowedExecutableName::new("definitely-not-a-real-program-xyz").unwrap(),
         });
         assert!(!r.success);

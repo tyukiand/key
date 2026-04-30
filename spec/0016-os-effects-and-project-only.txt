@@ -1,0 +1,264 @@
+Two related cleanups, both following from the spec/0015
+foundations:
+
+  A. Introduce an `OsEffects` capability handle. Single
+     injection point at `main`. All filesystem / process /
+     env / clock side-effects flow through it. Compile-time
+     read-only vs read-write distinction. Everything else
+     becomes pure on `(Project, &dyn OsEffects)`.
+
+  B. Make Project the ONLY unit `key audit` operates on.
+     Single-file `audit add` / `audit delete` are removed.
+     The same Interaction language from spec/0015 covers
+     ADD, DELETE, RUN-TESTS, RUN-AUDIT — fdisk-style.
+     `run_tests` continues to use the pragmatic tempdir
+     approach for the actual file-backed predicate
+     evaluator (see §A.5 — it routes through OsEffects so
+     it can be mocked).
+
+Background
+----------
+spec/0015 §1.4 acknowledged that `Project::run_tests` still
+materializes fixtures to a tempdir under the hood. That's a
+fine pragmatic choice IF the tempdir use is gated by a
+mockable capability so tests can swap in an in-memory
+filesystem. The current code does not do this; the tempdir
+is plumbed through `std::fs` directly. Threading an OsEffects
+through everything resolves both concerns: the in-memory
+audit-evaluation path becomes a special case of "OsEffects
+backed by an in-memory filesystem" without changing the
+caller-facing API.
+
+spec/0015 also left the live `key audit add` / `key audit
+delete` operating on single ControlFile yaml files
+(skipped steps 13/14). The user has decided this surface is
+cruft: `key audit` operates on Projects, period. Single-file
+editing goes away.
+
+A. OsEffects capability
+
+A.1 New trait `OsEffects` (placement: `src/effects/os.rs`
+    or alongside the existing src/effects.rs). Methods:
+
+      // filesystem
+      fn read_file(&self, p: &Path) -> Result<Vec<u8>>;
+      fn read_to_string(&self, p: &Path) -> Result<String>;
+      fn write_file(&self, p: &Path, bytes: &[u8]) -> Result<()>;
+      fn create_dir_all(&self, p: &Path) -> Result<()>;
+      fn remove_dir_all(&self, p: &Path) -> Result<()>;
+      fn metadata(&self, p: &Path) -> Result<Metadata>;
+      fn read_dir(&self, p: &Path) -> Result<Vec<DirEntry>>;
+      fn make_tempdir(&self) -> Result<TempDirHandle>;
+
+      // process / env / clock
+      fn safe_exec(&self, cmd: AllowedCommand) -> Result<SafeExecResult>;
+      fn env_var(&self, name: &str) -> Option<OsString>;
+      fn now(&self) -> SystemTime;
+
+    `safe_exec` becomes a method of OsEffects, replacing
+    the free function from spec/0014. The AllowedCommand
+    enum + brand types stay; only the entry point moves.
+
+A.2 Read-only vs read-write split via marker traits:
+
+      pub trait OsEffectsRo: Sealed { /* read methods only */ }
+      pub trait OsEffectsRw: OsEffectsRo { /* write methods */ }
+
+    Code that only reads takes `&dyn OsEffectsRo`; code
+    that mutates state takes `&dyn OsEffectsRw`. The split
+    is enforced at the type level — a function that asks
+    for Ro CANNOT call write_file even by accident.
+
+    `key audit run` and `key audit project test` and
+    `key audit guide` are Ro at the OsEffects level.
+    `key add`, `key activate`, `key audit project new`,
+    project mutators are Rw. `key audit --read-only` flag
+    forces Rw → Ro at the entry point.
+
+A.3 Implementations:
+
+      pub struct RealOsEffects;        // production
+      impl OsEffectsRw for RealOsEffects { /* std::fs + safe_exec */ }
+
+      pub struct MockOsEffects {       // tests
+          /* in-memory FS, programmable command results,
+             frozen clock, fake env */
+      }
+      impl OsEffectsRw for MockOsEffects { /* … */ }
+
+    MockOsEffects supports declarative seeding from YAML
+    fixtures (the existing fixture format from spec/0009)
+    so tests can stand up an entire host environment in
+    memory.
+
+A.4 Single injection point. `src/main.rs` builds either a
+    RealOsEffects or a MockOsEffects (the latter only via
+    tests, never from the production binary), and threads
+    the reference through. NO global, NO thread-local, NO
+    static. Every function that touches the OS takes the
+    handle as a parameter.
+
+A.5 `Project::run_tests` rewrite. The current "pragmatic
+    tempdir" approach stays semantically — fixtures still
+    materialize to disk before the file-backed evaluator
+    runs — BUT the disk it materializes onto is the
+    OsEffects-provided one. With MockOsEffects, that's an
+    in-memory FS; with RealOsEffects, a real tempdir.
+    Tests get genuine in-memory hermeticity for free.
+
+A.6 Migration: every `std::fs::*` call in src/ (excluding
+    main and the OsEffects implementations) is rewritten
+    as `effects.<method>(...)`. A new lint test
+    `tests/no_direct_fs.rs` mirrors `tests/no_direct_exec.rs`
+    from spec/0014: greps src/**/*.rs for `std::fs::`,
+    `tokio::fs::`, `fs::File::`, allowlists only
+    `src/effects/*.rs` and `src/main.rs`.
+
+B. Project as the only unit
+
+B.1 Removed CLI surfaces (BREAKING):
+
+      key audit add    <single-file.yaml>      — gone
+      key audit delete <single-file.yaml>      — gone
+      key audit list   <single-file.yaml>      — gone
+      key audit new    <single-file.yaml>      — gone
+
+    Anything that operated on a stand-alone audit yaml
+    file is removed. Single-file usage is cruft from an
+    earlier stage of the design.
+
+B.2 Replacements (project-scoped):
+
+      key audit project new <dir>              # creates a fresh
+                                               # Project layout
+      key audit project edit <dir>             # interactive
+                                               # menu — fdisk-
+                                               # style; supports
+                                               # add control,
+                                               # delete control,
+                                               # add fixture,
+                                               # delete fixture,
+                                               # add test entry,
+                                               # delete test
+                                               # entry, run
+                                               # tests, save+exit
+      key audit project run <dir>              # existing —
+                                               # audit against
+                                               # real FS
+      key audit project test <dir>             # existing — run
+                                               # in-memory tests
+      key audit project list <dir>             # show controls
+                                               # + fixtures
+                                               # + test entries
+
+    `key audit project edit` is the new home for the live
+    interactive surface. It loads the Project, drives the
+    spec/0015 Interaction with LowLevelInput from the
+    terminal, writes the Project back on Save+Exit (or
+    discards on Quit-Without-Save).
+
+B.3 The `edit` REPL keeps the spirit of fdisk — virtual
+    in-memory current state, incremental edit, atomic
+    write-on-save — without the 1990s single-letter
+    ergonomics. Every command is a self-documenting
+    kebab-case token. NO single-letter aliases; NO
+    abbreviation shortcuts. The names are the names.
+
+    Top-level commands at the menu prompt:
+
+      help                  → reprint the menu
+      list                  → show full current Project
+                              state (controls + fixtures
+                              + test entries; one section
+                              each, named ids only)
+      add-control           → enter the Add-Control
+                              sub-dialog
+      delete-control        → enter the Delete-Control
+                              sub-dialog (asks for id)
+      add-fixture           → enter the Add-Fixture
+                              sub-dialog
+      delete-fixture        → enter the Delete-Fixture
+                              sub-dialog (asks for name)
+      add-test-entry        → enter the Add-Test-Entry
+                              sub-dialog
+      delete-test-entry     → enter the Delete-Test-Entry
+                              sub-dialog (asks for name)
+      run-tests             → run tests in-memory;
+                              print TestsReport
+      run-audit             → run audit against real FS;
+                              print AuditReport
+      save                  → write Project back to disk
+      quit                  → quit (asks for confirmation
+                              if dirty)
+
+    Rationale: agentic interaction is the primary user.
+    Self-documenting tokens beat memorized shortcuts —
+    the agent reads the command name and knows what it
+    does without consulting a cheat sheet, and a
+    transcript with `add-control` / `delete-fixture` is
+    legible to a human reading the log a week later.
+
+    Implemented as a single `Interaction<LowLevelInput,
+    Project>` with a top-level menu loop (rendered as a
+    Menu::Pick whose `tag`s are the command tokens above)
+    branching into sub-Interactions for the Add*/Delete*
+    dialogs. The Lexical resolution from spec/0015 §2.2
+    means typing `add-control` at the prompt resolves to
+    its tag directly; partial matches like `add-c` are
+    accepted IF unique, hard-error otherwise. No numeric
+    indexes are advertised in the menu (they still work
+    via LowLevelInput::Index because the menu is a Pick,
+    but the displayed UX is name-only).
+
+    The `run-tests` and `run-audit` operations are
+    dialog-level: they don't mutate the Project, just
+    compute a report (via OsEffects) and print it inline.
+
+B.4 The Asm assembly from spec/0015 now naturally covers
+    every operation `edit` exposes, since they're all the
+    same AsmOps. A test-driven sequence
+    `[Select("ac"), Enter("CTRL-1"), …, Select("t"),
+    Select("w")]` is a complete project-construction +
+    test + save flow expressible without ANY filesystem
+    interaction (mock OsEffects).
+
+B.5 The round-trip property from spec/0015 §5.1 extends:
+    every Project P can be reached from `Project::empty()`
+    by an AsmOp sequence that includes any mix of
+    AddControl / DeleteControl / AddFixture / DeleteFixture
+    / AddTestEntry / DeleteTestEntry / RunTests / RunAudit /
+    Write / Quit. Round-trip equality is asserted on the
+    final Project state ignoring report ops (which are
+    observational).
+
+B.6 `key audit run` (top-level alias for ad-hoc audit
+    against real FS) — KEEP as a thin shortcut that
+    short-circuits to `key audit project run` against a
+    project-shaped argument. Existing test fixtures in
+    src/effects.rs etc. that exercised this stay valid
+    via OsEffects mocking.
+
+C. Out of scope
+
+- An async OsEffects (we're synchronous everywhere).
+- A persistence layer / DB for Projects (still YAML on
+  disk via OsEffects).
+- Multi-Project workflows / linking projects.
+- A pure capability-passing rewrite of `key keys` /
+  `key user` etc. — the scope here is `key audit`. The
+  same OsEffects can be plumbed through the rest later.
+
+D. Verification
+
+- ./test.sh PASS — including the no-direct-fs test (§A.6),
+  the OsEffects mock tests, the project-only CLI surface
+  tests, the round-trip extension (§B.5), and every prior
+  test (regression).
+- `key audit add <file>` exits non-zero with a clear
+  migration message pointing at `key audit project edit`.
+- `key audit project edit <dir>` end-to-end: load empty
+  project → `add-control` CTRL-1 (full sub-dialog) →
+  `run-tests` (passes) → `save` → reload → assert
+  Project state matches the edits.
+- ci.sh runs clean LOCALLY before pushing.
+- Commit; release tag is the receptionist's call.

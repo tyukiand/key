@@ -108,7 +108,8 @@ fn corpus_b_fixture_projects_round_trip() {
             continue;
         }
         let project_dir = entry.path();
-        let p = Project::load_from_dir(&project_dir)
+        let fx = key::effects::RealEffects;
+        let p = Project::load_from_dir(&project_dir, &fx)
             .unwrap_or_else(|e| panic!("load {}: {}", project_dir.display(), e));
         // Ignore the meta name during equality (loader sets it from the dir).
         let mut p_no_meta = p.clone();
@@ -278,6 +279,89 @@ fn corpus_d_brand_collision_detected() {
         .unwrap_err();
     let s = format!("{}", err);
     assert!(s.to_lowercase().contains("control"), "msg: {}", s);
+}
+
+// -----------------------------------------------------------------------
+// Spec/0016 §B.5 — round-trip extension. Observational ops (RunTests /
+// RunAudit / Write / Quit) introduced by the project-edit menu are
+// observational-only on Project state. Mixing them into a mutation
+// sequence must not change the resulting Project; final-state equality
+// is what's asserted.
+// -----------------------------------------------------------------------
+
+#[test]
+fn corpus_d_observational_ops_are_state_noops() {
+    // RunTests / RunAudit / Write between mutations: final Project state
+    // must equal the mutation-only baseline.
+    let baseline_ops = vec![
+        ProjectMutation::AddFixture {
+            name: "fx".try_into().unwrap(),
+            fixture: key::project::FixtureFile::default(),
+        },
+        ProjectMutation::AddControl {
+            file: "alpha".try_into().unwrap(),
+            control: sample_control("CTL"),
+        },
+        ProjectMutation::Done,
+    ];
+    let baseline = Project::apply_mutations(Project::empty(), baseline_ops).unwrap();
+
+    let extended_ops = vec![
+        ProjectMutation::AddFixture {
+            name: "fx".try_into().unwrap(),
+            fixture: key::project::FixtureFile::default(),
+        },
+        ProjectMutation::RunTests,
+        ProjectMutation::AddControl {
+            file: "alpha".try_into().unwrap(),
+            control: sample_control("CTL"),
+        },
+        ProjectMutation::RunAudit,
+        ProjectMutation::Write,
+        ProjectMutation::Done,
+    ];
+    let extended = Project::apply_mutations(Project::empty(), extended_ops).unwrap();
+    assert_eq!(extended, baseline);
+}
+
+#[test]
+fn corpus_d_quit_terminates_stream() {
+    // Quit must terminate the mutation stream like Done — any ops after it
+    // are not applied. Intentional behavior so a `quit` mid-edit doesn't
+    // commit subsequent mutations.
+    let ops = vec![
+        ProjectMutation::AddFixture {
+            name: "fx".try_into().unwrap(),
+            fixture: key::project::FixtureFile::default(),
+        },
+        ProjectMutation::Quit,
+        // This AddControl must NOT be applied because Quit terminates.
+        ProjectMutation::AddControl {
+            file: "alpha".try_into().unwrap(),
+            control: sample_control("CTL"),
+        },
+    ];
+    let result = Project::apply_mutations(Project::empty(), ops).unwrap();
+    assert_eq!(result.fixtures.len(), 1);
+    assert!(
+        result.controls.is_empty(),
+        "Quit must terminate before later mutations"
+    );
+}
+
+#[test]
+fn corpus_d_observational_op_only_sequence() {
+    // A sequence containing only observational ops must round-trip empty
+    // Project unchanged.
+    let p = Project::empty();
+    let ops = vec![
+        ProjectMutation::RunTests,
+        ProjectMutation::RunAudit,
+        ProjectMutation::Write,
+        ProjectMutation::Done,
+    ];
+    let rebuilt = Project::apply_mutations(p.clone(), ops).unwrap();
+    assert_eq!(rebuilt, p);
 }
 
 #[test]

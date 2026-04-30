@@ -5,15 +5,28 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+pub mod os;
+
+#[cfg(feature = "testing")]
+#[allow(unused_imports)]
+pub use os::MockOsEffects;
+#[allow(unused_imports)]
+pub use os::{
+    DirEntryKind, MetadataInfo, OsEffects, OsEffectsRo, OsEffectsRw, RealOsEffects, TempDirHandle,
+};
+
 pub trait Effects {
     fn read_file(&self, path: &Path) -> Result<Vec<u8>>;
     fn read_file_string(&self, path: &Path) -> Result<String>;
     fn write_file(&self, path: &Path, contents: &[u8]) -> Result<()>;
     fn path_exists(&self, path: &Path) -> bool;
     fn is_dir(&self, path: &Path) -> bool;
+    fn is_file(&self, path: &Path) -> bool;
     fn create_dir_all(&self, path: &Path) -> Result<()>;
     fn remove_dir_all(&self, path: &Path) -> Result<()>;
     fn read_dir_names(&self, path: &Path) -> Result<Vec<String>>;
+    fn read_dir_entries(&self, path: &Path) -> Result<Vec<os::DirEntryKind>>;
+    fn copy_file(&self, src: &Path, dst: &Path) -> Result<u64>;
     fn set_permissions(&self, path: &Path, mode: u32) -> Result<()>;
     fn println(&self, msg: &str);
     fn eprintln(&self, msg: &str);
@@ -56,6 +69,10 @@ impl Effects for RealEffects {
         path.is_dir()
     }
 
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
     fn create_dir_all(&self, path: &Path) -> Result<()> {
         std::fs::create_dir_all(path).with_context(|| format!("Creating dir {}", path.display()))
     }
@@ -76,6 +93,16 @@ impl Effects for RealEffects {
         }
         names.sort();
         Ok(names)
+    }
+
+    fn read_dir_entries(&self, path: &Path) -> Result<Vec<os::DirEntryKind>> {
+        let os = RealOsEffects;
+        os.read_dir(path)
+    }
+
+    fn copy_file(&self, src: &Path, dst: &Path) -> Result<u64> {
+        std::fs::copy(src, dst)
+            .with_context(|| format!("copying {} -> {}", src.display(), dst.display()))
     }
 
     fn set_permissions(&self, path: &Path, mode: u32) -> Result<()> {
@@ -151,12 +178,13 @@ impl Effects for RealEffects {
     }
 
     fn check_ssh_prereqs(&self) -> Result<()> {
-        use crate::security::exec::{safe_exec, AllowedCommand, AllowedExecutableName};
+        use crate::security::exec::{AllowedCommand, AllowedExecutableName};
+        let os = RealOsEffects;
         for tool in &["ssh-keygen", "ssh-add"] {
             let exe = AllowedExecutableName::new(tool)
                 .map_err(|e| anyhow::anyhow!("{}", e))
                 .with_context(|| format!("Checking for {}", tool))?;
-            let result = safe_exec(AllowedCommand::Which { exe });
+            let result = os.safe_exec(AllowedCommand::Which { exe });
             if !result.success {
                 bail!(
                     "Required tool '{}' not found on PATH. Please install OpenSSH.",
@@ -169,12 +197,13 @@ impl Effects for RealEffects {
 
     fn ssh_keygen_generate(&self, key_path: &Path, comment: &str) -> Result<()> {
         use crate::security::exec::{
-            safe_exec, AllowedCommand, AllowedComment, AllowedKeyPath, AllowedKeyType,
+            AllowedCommand, AllowedComment, AllowedKeyPath, AllowedKeyType,
         };
+        let os = RealOsEffects;
         let key_path_brand = AllowedKeyPath::new(key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
         let comment_brand = AllowedComment::new(comment).map_err(|e| anyhow::anyhow!("{}", e))?;
         let key_type = AllowedKeyType::Ed25519;
-        let result = safe_exec(AllowedCommand::SshKeygenGenerate {
+        let result = os.safe_exec(AllowedCommand::SshKeygenGenerate {
             key_type,
             comment: comment_brand,
             key_path: key_path_brand,
@@ -188,9 +217,10 @@ impl Effects for RealEffects {
     }
 
     fn ssh_keygen_fingerprint(&self, pub_path: &Path) -> Result<String> {
-        use crate::security::exec::{safe_exec, AllowedCommand, AllowedKeyPath};
+        use crate::security::exec::{AllowedCommand, AllowedKeyPath};
+        let os = RealOsEffects;
         let key_path = AllowedKeyPath::new(pub_path).map_err(|e| anyhow::anyhow!("{}", e))?;
-        let result = safe_exec(AllowedCommand::SshKeygenFingerprint { key_path });
+        let result = os.safe_exec(AllowedCommand::SshKeygenFingerprint { key_path });
         if !result.success {
             bail!("ssh-keygen -l failed for {}", pub_path.display());
         }
@@ -204,9 +234,10 @@ impl Effects for RealEffects {
     }
 
     fn ssh_add(&self, key_path: &Path) -> Result<()> {
-        use crate::security::exec::{safe_exec, AllowedCommand, AllowedKeyPath};
+        use crate::security::exec::{AllowedCommand, AllowedKeyPath};
+        let os = RealOsEffects;
         let key_path_brand = AllowedKeyPath::new(key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
-        let result = safe_exec(AllowedCommand::SshAddAdd {
+        let result = os.safe_exec(AllowedCommand::SshAddAdd {
             key_path: key_path_brand,
         });
         if !result.success {
@@ -216,8 +247,9 @@ impl Effects for RealEffects {
     }
 
     fn ssh_add_list(&self) -> Result<String> {
-        use crate::security::exec::{safe_exec, AllowedCommand};
-        let result = safe_exec(AllowedCommand::SshAddList);
+        use crate::security::exec::AllowedCommand;
+        let os = RealOsEffects;
+        let result = os.safe_exec(AllowedCommand::SshAddList);
         // ssh-add -l: exit 1 means "agent has no identities" — not an error.
         if result.exit == Some(1) {
             return Ok(String::new());
@@ -391,6 +423,10 @@ impl Effects for CannedEffects {
         self.dirs.borrow().contains(path)
     }
 
+    fn is_file(&self, path: &Path) -> bool {
+        self.fs.borrow().contains_key(path)
+    }
+
     fn create_dir_all(&self, path: &Path) -> Result<()> {
         let mut dirs = self.dirs.borrow_mut();
         let mut current = path.to_path_buf();
@@ -434,6 +470,55 @@ impl Effects for CannedEffects {
         }
 
         Ok(names.into_iter().collect())
+    }
+
+    fn read_dir_entries(&self, path: &Path) -> Result<Vec<os::DirEntryKind>> {
+        let fs = self.fs.borrow();
+        let dirs = self.dirs.borrow();
+        let mut entries: BTreeMap<String, os::DirEntryKind> = BTreeMap::new();
+        for file_path in fs.keys() {
+            if file_path.parent() == Some(path) {
+                if let Some(name) = file_path.file_name().and_then(|n| n.to_str()) {
+                    entries.insert(
+                        name.to_string(),
+                        os::DirEntryKind {
+                            name: name.to_string(),
+                            path: file_path.clone(),
+                            is_dir: false,
+                            is_file: true,
+                        },
+                    );
+                }
+            }
+        }
+        for dir_path in dirs.iter() {
+            if dir_path.parent() == Some(path) {
+                if let Some(name) = dir_path.file_name().and_then(|n| n.to_str()) {
+                    entries.insert(
+                        name.to_string(),
+                        os::DirEntryKind {
+                            name: name.to_string(),
+                            path: dir_path.clone(),
+                            is_dir: true,
+                            is_file: false,
+                        },
+                    );
+                }
+            }
+        }
+        Ok(entries.into_values().collect())
+    }
+
+    fn copy_file(&self, src: &Path, dst: &Path) -> Result<u64> {
+        let bytes = self
+            .fs
+            .borrow()
+            .get(src)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("File not found: {}", src.display()))?;
+        let n = bytes.len() as u64;
+        self.write_file(dst, &bytes)?;
+        Ok(n)
     }
 
     fn set_permissions(&self, _path: &Path, _mode: u32) -> Result<()> {
