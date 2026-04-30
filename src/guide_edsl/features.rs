@@ -38,6 +38,11 @@ pub enum Feature {
     PredicateShellExportsVariableValueMatches,
     PredicateShellDefinesVariableValueMatches,
 
+    // ---------- json-matches mode tags (spec/0013 §A.7B + §A.8.2) ----------
+    PredicateJsonMatchesIsTrue,
+    PredicateJsonMatchesIsFalse,
+    PredicateJsonMatchesRegex,
+
     // ---------- Pseudo-files (spec/0009 §1.1) ----------
     PseudoFileEnv,
     PseudoFileExecutable,
@@ -96,6 +101,9 @@ impl Feature {
             PredicateConditionally,
             PredicateShellExportsVariableValueMatches,
             PredicateShellDefinesVariableValueMatches,
+            PredicateJsonMatchesIsTrue,
+            PredicateJsonMatchesIsFalse,
+            PredicateJsonMatchesRegex,
             PseudoFileEnv,
             PseudoFileExecutable,
             ControlFile,
@@ -120,7 +128,7 @@ impl Feature {
     }
 
     /// Total count of distinct features.
-    pub const COUNT: usize = 44;
+    pub const COUNT: usize = 47;
 
     /// Optional parent. Roots return `None`.
     pub fn parent(self) -> Option<Feature> {
@@ -135,6 +143,12 @@ impl Feature {
             // sits under its bare-string umbrella feature.
             PredicateShellExportsVariableValueMatches => Some(PredicateShellExportsVariable),
             PredicateShellDefinesVariableValueMatches => Some(PredicateShellDefinesVariable),
+
+            // Spec/0013 §A.7B + §A.8.2 — json-matches mode tags sit under
+            // the umbrella `json-matches` feature.
+            PredicateJsonMatchesIsTrue => Some(PredicateJsonMatches),
+            PredicateJsonMatchesIsFalse => Some(PredicateJsonMatches),
+            PredicateJsonMatchesRegex => Some(PredicateJsonMatches),
 
             // ControlFile field children sit under the parent control file.
             ControlIdField => Some(ControlFile),
@@ -182,6 +196,9 @@ impl Feature {
             PredicateShellDefinesVariableValueMatches => {
                 "PredicateShellDefinesVariableValueMatches"
             }
+            PredicateJsonMatchesIsTrue => "PredicateJsonMatchesIsTrue",
+            PredicateJsonMatchesIsFalse => "PredicateJsonMatchesIsFalse",
+            PredicateJsonMatchesRegex => "PredicateJsonMatchesRegex",
             PseudoFileEnv => "PseudoFileEnv",
             PseudoFileExecutable => "PseudoFileExecutable",
             ControlFile => "ControlFile",
@@ -236,6 +253,9 @@ impl Feature {
             PredicateConditionally => "conditionally",
             PredicateShellExportsVariableValueMatches => "shell-exports-value-matches",
             PredicateShellDefinesVariableValueMatches => "shell-defines-value-matches",
+            PredicateJsonMatchesIsTrue => "json-matches-is-true",
+            PredicateJsonMatchesIsFalse => "json-matches-is-false",
+            PredicateJsonMatchesRegex => "json-matches-regex",
             PseudoFileEnv => "env",
             PseudoFileExecutable => "executable",
             ControlFile => "control-file",

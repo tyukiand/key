@@ -17,6 +17,8 @@ pub fn generate_data_schema(schema: &DataSchema) -> Value {
         DataSchema::IsStringMatching(re) => mk("is-string-matching", Value::String(re.clone())),
         DataSchema::IsNumber => Value::String("is-number".into()),
         DataSchema::IsBool => Value::String("is-bool".into()),
+        DataSchema::IsTrue => Value::String("is-true".into()),
+        DataSchema::IsFalse => Value::String("is-false".into()),
         DataSchema::IsNull => Value::String("is-null".into()),
         DataSchema::IsObject(entries) => {
             let mut m = Mapping::new();

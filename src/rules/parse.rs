@@ -39,10 +39,13 @@ pub fn parse_data_schema(value: &Value) -> Result<DataSchema> {
             "is-string" => Ok(DataSchema::IsString),
             "is-number" => Ok(DataSchema::IsNumber),
             "is-bool" => Ok(DataSchema::IsBool),
+            // Spec/0013 §A.7B — strict boolean equality.
+            "is-true" => Ok(DataSchema::IsTrue),
+            "is-false" => Ok(DataSchema::IsFalse),
             "is-null" => Ok(DataSchema::IsNull),
             _ => bail!(
                 "Unknown data schema keyword: {:?}. Valid bare keywords: \
-                 anything, is-string, is-number, is-bool, is-null. \
+                 anything, is-string, is-number, is-bool, is-true, is-false, is-null. \
                  For structured checks use a mapping (is-string-matching, is-object, is-array).",
                 s
             ),
@@ -560,10 +563,39 @@ pub fn parse_test_expectation(value: &Value) -> Result<TestExpectation> {
     }
 }
 
+/// Spec/0013 §A.6.2 — strict-key enforcement. The accepted keys for each
+/// AST level. Anything else is rejected with the offending key named.
+const TEST_CASE_KEYS: &[&str] = &["control-id", "description", "fixture", "expect"];
+const TEST_SUITE_KEYS: &[&str] = &["name", "description", "tests"];
+const TEST_FILE_KEYS: &[&str] = &["test-suites"];
+
+fn check_unknown_keys(m: &serde_yaml::Mapping, valid: &[&str], context: &str) -> Result<()> {
+    for (k, _) in m.iter() {
+        let key = match k.as_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        if !valid.contains(&key) {
+            bail!(
+                "Unknown key {:?} in {}. Valid keys: {}.",
+                key,
+                context,
+                valid
+                    .iter()
+                    .map(|k| format!("`{}`", k))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn parse_test_case(value: &Value) -> Result<TestCase> {
     let m = value
         .as_mapping()
         .ok_or_else(|| anyhow!("A test case must be a YAML mapping"))?;
+    check_unknown_keys(m, TEST_CASE_KEYS, "test case")?;
     let control_id = mget(m, "control-id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Test case requires a 'control-id' string field"))?
@@ -591,6 +623,7 @@ pub fn parse_test_suite(value: &Value) -> Result<TestSuite> {
     let m = value
         .as_mapping()
         .ok_or_else(|| anyhow!("A test suite must be a YAML mapping"))?;
+    check_unknown_keys(m, TEST_SUITE_KEYS, "test suite")?;
     let name = mget(m, "name")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Test suite requires a 'name' string field"))?
@@ -621,6 +654,7 @@ pub fn parse_test_file(yaml: &str) -> Result<TestFile> {
     let m = value
         .as_mapping()
         .ok_or_else(|| anyhow!("Test file must be a YAML mapping with a 'test-suites' key"))?;
+    check_unknown_keys(m, TEST_FILE_KEYS, "test file")?;
     let suites_val =
         mget(m, "test-suites").ok_or_else(|| anyhow!("Test file must have a 'test-suites' key"))?;
     let seq = suites_val
@@ -1062,5 +1096,59 @@ shell-exports:
         let yaml_str = generate::generate_test_file(&tf);
         let parsed = parse_test_file(&yaml_str).unwrap();
         assert_eq!(parsed, tf);
+    }
+
+    /// Spec/0013 §A.6.2 — `expecet:` (typo of `expect:`) is rejected
+    /// naming the offending key, NOT silently ignored.
+    #[test]
+    fn tests_yaml_typo_expecet_is_rejected() {
+        let yaml = r#"
+test-suites:
+  - name: s
+    tests:
+      - control-id: FOO
+        description: bar
+        fixture: x
+        expect: pass
+        expecet: fail
+"#;
+        let err = parse_test_file(yaml).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("expecet"),
+            "expected error naming the typo `expecet`; got {}",
+            msg
+        );
+        assert!(
+            msg.contains("test case"),
+            "expected error to identify the test case context; got {}",
+            msg
+        );
+    }
+
+    /// Spec/0013 §A.6.2 — unknown top-level key in tests.yaml rejected.
+    #[test]
+    fn tests_yaml_unknown_top_level_key_is_rejected() {
+        let yaml = r#"
+test-suites: []
+something-else: 1
+"#;
+        let err = parse_test_file(yaml).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("something-else"));
+    }
+
+    /// Spec/0013 §A.6.2 — unknown key inside a test suite rejected.
+    #[test]
+    fn tests_yaml_unknown_key_in_suite_is_rejected() {
+        let yaml = r#"
+test-suites:
+  - name: s
+    tests: []
+    bogus: 1
+"#;
+        let err = parse_test_file(yaml).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("bogus"));
     }
 }

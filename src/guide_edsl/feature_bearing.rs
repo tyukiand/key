@@ -7,7 +7,7 @@
 
 use super::features::Feature;
 use crate::rules::ast::{
-    Control, ControlFile, FilePredicateAst, Proposition, PseudoFile, PseudoFileFixture,
+    Control, ControlFile, DataSchema, FilePredicateAst, Proposition, PseudoFile, PseudoFileFixture,
 };
 
 /// Implement on every AST variant that participates in feature coverage.
@@ -64,6 +64,26 @@ impl FeatureBearing for FilePredicateAst {
             FilePredicateAst::Any { .. } => &[Feature::PredicateOr],
             FilePredicateAst::Not(_) => &[Feature::PredicateNot],
             FilePredicateAst::Conditionally { .. } => &[Feature::PredicateConditionally],
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// DataSchema mode-tag variants (spec/0013 §A.7B + §A.8.2)
+//
+// json-matches modes claim Features for documentation drill-down. Most
+// schemas (is-string, is-object, ...) don't have their own Features in
+// this iteration; only the ones spec/0013 calls out explicitly do.
+// Returns &[] for modes without a dedicated Feature claim.
+// -----------------------------------------------------------------------------
+
+impl FeatureBearing for DataSchema {
+    fn features(&self) -> &'static [Feature] {
+        match self {
+            DataSchema::IsTrue => &[Feature::PredicateJsonMatchesIsTrue],
+            DataSchema::IsFalse => &[Feature::PredicateJsonMatchesIsFalse],
+            DataSchema::IsStringMatching(_) => &[Feature::PredicateJsonMatchesRegex],
+            _ => &[],
         }
     }
 }
@@ -170,8 +190,9 @@ pub fn all_cli_command_variants() -> Vec<CliCommandFeature> {
 mod tests {
     use super::*;
     use crate::rules::ast::{
-        all_predicate_variants, all_proposition_variants, Control, ControlFile, ExecutableSnapshot,
-        FilePredicateAst, Proposition, PseudoFile, PseudoFileFixture, SimplePath,
+        all_data_schema_variants, all_predicate_variants, all_proposition_variants, Control,
+        ControlFile, ExecutableSnapshot, FilePredicateAst, Proposition, PseudoFile,
+        PseudoFileFixture, SimplePath,
     };
 
     fn one_control() -> Control {
@@ -202,6 +223,12 @@ mod tests {
         // Predicates
         for p in all_predicate_variants() {
             multiset.extend_from_slice(p.features());
+        }
+        // Spec/0013 §A.7B + §A.8.2 — DataSchema mode-tag variants claim
+        // their own Features (is-true / is-false / is-string-matching for
+        // PredicateJsonMatchesRegex).
+        for s in all_data_schema_variants() {
+            multiset.extend_from_slice(s.features());
         }
         // Pseudo-files (both variants)
         multiset.extend_from_slice(PseudoFile::Env.features());

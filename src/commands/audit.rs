@@ -5,9 +5,11 @@ use anyhow::{bail, Context, Result};
 use crate::cli::{AuditCommand, ProjectCommand};
 use crate::effects::Effects;
 use crate::rules::ast::{ControlFile, RuleFailure, TestExpectation};
-use crate::rules::evaluate::evaluate;
+use crate::rules::evaluate::{evaluate, evaluate_with_ctx};
+use crate::rules::fixture::parse_fixture_collect_warnings;
 use crate::rules::generate::{generate_control_file, generate_test_file};
 use crate::rules::parse::{parse_control_file, parse_test_file};
+use crate::rules::pseudo::EvalContext;
 
 pub fn dispatch(cmd: &AuditCommand, home_dir: &Path, fx: &dyn Effects) -> Result<()> {
     match cmd {
@@ -18,7 +20,11 @@ pub fn dispatch(cmd: &AuditCommand, home_dir: &Path, fx: &dyn Effects) -> Result
         } => run_audit(file, home_dir, ignore, warn_only, fx),
         AuditCommand::New { yaml_path } => new_audit(yaml_path, fx),
         AuditCommand::Add { yaml_path } => add_control(yaml_path, fx),
-        AuditCommand::Guide { verbose, feature } => guide(*verbose, feature.as_deref(), fx),
+        AuditCommand::Guide {
+            verbose,
+            feature,
+            emit_project,
+        } => guide(*verbose, feature.as_deref(), emit_project.as_deref(), fx),
         AuditCommand::Test {
             yaml_path,
             fake_home,
@@ -164,7 +170,12 @@ fn suggest_canonical_id(typed: &str) -> Option<&'static str> {
     best.map(|(_, _, id)| id)
 }
 
-fn guide(verbose: bool, feature_id: Option<&str>, fx: &dyn Effects) -> Result<()> {
+fn guide(
+    verbose: bool,
+    feature_id: Option<&str>,
+    emit_project_dir: Option<&str>,
+    fx: &dyn Effects,
+) -> Result<()> {
     use crate::guide_edsl::features::Feature;
     let mode = if verbose {
         crate::guide_edsl::text::Mode::Verbose
@@ -213,6 +224,19 @@ fn guide(verbose: bool, feature_id: Option<&str>, fx: &dyn Effects) -> Result<()
     } else {
         tree
     };
+
+    if let Some(out_dir) = emit_project_dir {
+        // Spec/0013 §B.1 — materialize a full audit-project layout under
+        // <out_dir> from the same EDSL tree the guide renders.
+        let summary =
+            crate::guide_edsl::emit_project::emit_project(&to_render, mode, Path::new(out_dir))?;
+        fx.println(&format!(
+            "Emitted audit project to {} \
+             ({} control(s), {} fixture(s), {} test entry(ies))",
+            out_dir, summary.control_count, summary.fixture_count, summary.test_count,
+        ));
+        return Ok(());
+    }
 
     let text = crate::guide_edsl::text::render(&to_render, mode);
     fx.println(&text);
@@ -575,8 +599,20 @@ pub fn project_test(project_dir: &Path, fx: &dyn Effects) -> Result<()> {
                 );
             }
 
-            // Evaluate control against fixture
-            let eval_result = evaluate(&control.check, &fixture_dir);
+            // Spec/0013 §B.1 — load pseudo-file overrides from the fixture
+            // dir if `pseudo-file-overrides.yaml` is present. Without
+            // overrides, fall through to the legacy real-env behavior.
+            let overrides_path = fixture_dir.join("pseudo-file-overrides.yaml");
+            let eval_result = if overrides_path.is_file() {
+                let yaml = std::fs::read_to_string(&overrides_path)
+                    .with_context(|| format!("reading {}", overrides_path.display()))?;
+                let (fixture, _warnings) = parse_fixture_collect_warnings(&yaml)
+                    .with_context(|| format!("parsing {}", overrides_path.display()))?;
+                let ctx = EvalContext::with_fixture(fixture_dir.clone(), fixture);
+                evaluate_with_ctx(&control.check, &ctx)
+            } else {
+                evaluate(&control.check, &fixture_dir)
+            };
 
             // Compare against expectation
             match (&tc.expect, &eval_result) {
@@ -751,7 +787,7 @@ mod tests {
     fn unknown_feature_id_error_contains_hint() {
         use crate::effects::CannedEffects;
         let fx = CannedEffects::new();
-        let err = guide(false, Some("pseudo-file-env"), &fx).unwrap_err();
+        let err = guide(false, Some("pseudo-file-env"), None, &fx).unwrap_err();
         let msg = format!("{:#}", err);
         assert!(
             msg.contains("did you mean: env?"),
@@ -767,7 +803,7 @@ mod tests {
         use crate::effects::CannedEffects;
         let fx = CannedEffects::new();
 
-        let err = guide(false, Some("predicate-shell-exports-variable"), &fx).unwrap_err();
+        let err = guide(false, Some("predicate-shell-exports-variable"), None, &fx).unwrap_err();
         let msg = format!("{:#}", err);
         assert!(
             msg.contains("did you mean: shell-exports?"),
@@ -775,7 +811,7 @@ mod tests {
             msg
         );
 
-        let err = guide(false, Some("proposition-forall"), &fx).unwrap_err();
+        let err = guide(false, Some("proposition-forall"), None, &fx).unwrap_err();
         let msg = format!("{:#}", err);
         assert!(
             msg.contains("did you mean: forall?"),
@@ -793,7 +829,7 @@ mod tests {
         use crate::effects::CannedEffects;
         for f in Feature::all() {
             let fx = CannedEffects::new();
-            guide(false, Some(f.canonical_id()), &fx)
+            guide(false, Some(f.canonical_id()), None, &fx)
                 .unwrap_or_else(|e| panic!("--feature={} failed: {:#}", f.canonical_id(), e));
             // Some output was emitted (terse drilled-in tree is non-empty).
             assert!(

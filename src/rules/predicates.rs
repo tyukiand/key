@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use regex::Regex;
 
 use crate::rules::ast::{FilePredicateAst, PseudoFile};
-use crate::rules::pseudo::{inapplicable_predicate_message, PseudoKind, PseudoSnapshot};
+use crate::rules::pseudo::{inapplicable_predicate_message, PseudoSnapshot};
 use crate::rules::queries;
 
 fn strip_shell_quotes(s: &str) -> &str {
@@ -151,19 +151,16 @@ pub fn evaluate_predicate_subject(
                     Err(format!("file does not exist: {}", p.display()))
                 }
             }
-            Subject::Pseudo(pseudo, snap) => match (pseudo, &snap.kind) {
-                // <env> is always present (§2.3)
-                (PseudoFile::Env, _) => Ok(()),
-                // <executable:NAME>: file-exists ↔ found=true (§3.5)
-                (PseudoFile::Executable(_), PseudoKind::Executable { snapshot }) => {
-                    if snapshot.found {
-                        Ok(())
-                    } else {
-                        Err(format!("executable {:?} not found on PATH", snapshot.name))
-                    }
-                }
-                _ => Ok(()),
-            },
+            Subject::Pseudo(_, _) => {
+                // Spec/0013 §A.7 — `file-exists` on every pseudo-file is constant
+                // TRUE. The pseudo-file's virtual content is always materialized
+                // (env reads `std::env::vars()`; executable builds a snapshot
+                // whose `.found` field reflects PATH lookup but the snapshot
+                // itself always exists). To test whether a program is on PATH,
+                // use `json-matches: { path: $.found, equals: true }` or
+                // `is-true` on the `.found` field.
+                Ok(())
+            }
         },
         FilePredicateAst::TextMatchesRegex(pattern) => {
             let content = read_subject_text(subject)?;

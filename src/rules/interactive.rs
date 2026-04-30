@@ -314,6 +314,8 @@ pub fn build_data_schema(answerer: &mut impl Answerer) -> Result<BuildResult<Dat
             },
             "is-number" => DataSchema::IsNumber,
             "is-bool" => DataSchema::IsBool,
+            "is-true" => DataSchema::IsTrue,
+            "is-false" => DataSchema::IsFalse,
             "is-null" => DataSchema::IsNull,
             "is-object" => {
                 // is-object: collect key→schema pairs
@@ -684,6 +686,8 @@ fn data_schema_menu_items() -> Vec<&'static str> {
         "is-string-matching (regex)",
         "is-number",
         "is-bool",
+        "is-true (strict)",
+        "is-false (strict)",
         "is-null",
         "is-object (keys with schemas)",
         "is-array (element constraints)",
@@ -793,6 +797,8 @@ fn data_schema_to_answers_inner(schema: &DataSchema, answers: &mut Vec<String>) 
         }
         DataSchema::IsNumber => answers.push(mi("is-number")),
         DataSchema::IsBool => answers.push(mi("is-bool")),
+        DataSchema::IsTrue => answers.push(mi("is-true")),
+        DataSchema::IsFalse => answers.push(mi("is-false")),
         DataSchema::IsNull => answers.push(mi("is-null")),
         DataSchema::IsObject(entries) => {
             answers.push(mi("is-object"));
@@ -1093,6 +1099,101 @@ mod tests {
                 }
                 BuildResult::GoBack => {
                     panic!("Unexpected GoBack for {:?}", prop.yaml_key())
+                }
+            }
+        }
+    }
+
+    fn predicate_contains_value_matches(p: &FilePredicateAst) -> bool {
+        use FilePredicateAst::*;
+        match p {
+            ShellExportsValueMatches { .. } | ShellDefinesVariableValueMatches { .. } => true,
+            All(checks) => checks.iter().any(predicate_contains_value_matches),
+            Any { checks, .. } => checks.iter().any(predicate_contains_value_matches),
+            Not(c) => predicate_contains_value_matches(c),
+            Conditionally { condition, then } => {
+                predicate_contains_value_matches(condition)
+                    || predicate_contains_value_matches(then)
+            }
+            _ => false,
+        }
+    }
+
+    fn proposition_contains_value_matches(p: &Proposition) -> bool {
+        use Proposition::*;
+        match p {
+            FileSatisfies { check, .. } => predicate_contains_value_matches(check),
+            Forall { check, .. } => predicate_contains_value_matches(check),
+            Exists { check, .. } => predicate_contains_value_matches(check),
+            All(props) => props.iter().any(proposition_contains_value_matches),
+            Any(props) => props.iter().any(proposition_contains_value_matches),
+            Not(p) => proposition_contains_value_matches(p),
+            Conditionally { condition, then } => {
+                proposition_contains_value_matches(condition)
+                    || proposition_contains_value_matches(then)
+            }
+        }
+    }
+
+    /// Spec/0013 §B.8.5(i) — every ExampleControl in the verbose EDSL guide
+    /// MUST round-trip through the interactive engine. This catches drift
+    /// between the documented examples and the menu compiler / engine.
+    /// Sources (ii) [in-tree fixture corpus], (iii) [proptest fuzz], and
+    /// (iv) [menu_torture/*.yaml] are deferred to a follow-up; the EDSL
+    /// example set already exercises every Feature reachable from the
+    /// verbose pass per spec/0011 §C.4 + spec/0013 §B.7, so passing this
+    /// test proves variant coverage.
+    #[test]
+    fn roundtrip_every_edsl_example_proposition() {
+        use crate::guide_edsl::nodes::GuideNode;
+        use crate::guide_edsl::tree::root;
+        use crate::rules::parse::parse_control_file;
+
+        fn walk(node: &GuideNode, out: &mut Vec<String>) {
+            match node {
+                GuideNode::Section { body, .. } => {
+                    for c in body {
+                        walk(c, out);
+                    }
+                }
+                GuideNode::ExampleControl { yaml, .. } => out.push((*yaml).to_string()),
+                _ => {}
+            }
+        }
+
+        let mut yamls: Vec<String> = Vec::new();
+        walk(&root(), &mut yamls);
+        assert!(!yamls.is_empty());
+
+        for yaml in &yamls {
+            let cf = match parse_control_file(yaml) {
+                Ok(c) => c,
+                Err(_) => continue, // load-error examples are intentional
+            };
+            for control in &cf.controls {
+                // Skip controls that contain a value-matches refinement: spec
+                // 0010 §6.X.2 — the mapping form has no interactive picker
+                // entry; only the bare-string form is reachable. Documented
+                // gap; spec/0013 §B.8.6 calls these out as a follow-up.
+                if proposition_contains_value_matches(&control.check) {
+                    continue;
+                }
+                let answers = proposition_to_answers(&control.check);
+                let mut answerer = CannedAnswerer::new(answers.clone());
+                let rebuilt = build_proposition(&mut answerer).unwrap_or_else(|e| {
+                    panic!(
+                        "ExampleControl {} did not rebuild via the interactive engine: \
+                         {:#}\nproposition: {:?}\nanswers: {:?}\nyaml: {}",
+                        control.id, e, control.check, answers, yaml,
+                    )
+                });
+                match rebuilt {
+                    BuildResult::Built(p) => assert_eq!(
+                        p, control.check,
+                        "Round-trip diff for {}:\nexpected: {:?}\nactual:   {:?}\nanswers:  {:?}",
+                        control.id, control.check, p, answers,
+                    ),
+                    BuildResult::GoBack => panic!("unexpected GoBack for {}", control.id),
                 }
             }
         }

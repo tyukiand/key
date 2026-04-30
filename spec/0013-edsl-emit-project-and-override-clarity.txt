@@ -1,0 +1,493 @@
+Two related fixes to the guide EDSL surface:
+
+  A. The override-fixture documentation is unclear: agents
+     forget keys, don't know where the YAML lives, and don't
+     realize the override maps are PLURAL (multiple executables
+     per fixture, multiple env vars per fixture). Rename and
+     restructure for clarity.
+
+  B. Spec 0010 §4.2 promised a "complete project" interpretation
+     of the EDSL but landed it as an internal test fixture only.
+     Promote it to a real CLI command that materializes a
+     full audit-project layout, AND wire that materialized
+     project into both unit and integration tests so the project
+     ALWAYS passes when the released `key audit project test`
+     is run against it.
+
+Background
+----------
+Concrete failure modes observed when an agent tries to write a
+fixture from the current guide:
+  - "executable-override" sounds singular; agents put one
+    executable's fields directly under it (e.g. `name:`,
+    `found:` at the top level) instead of one map ENTRY per
+    executable;
+  - guide doesn't say what file path holds the fixture, so
+    agents don't know whether to place it next to the YAML
+    audit file, under tests/, or under src/test/;
+  - guide skips required keys like `version-full` /
+    `command-full` / `path` and agents leave them out;
+  - the EDSL has the "complete project" interpretation but
+    nobody can invoke it from the CLI, so it can't catch
+    drift between guide examples and what `key audit project
+    test` actually accepts.
+
+A. Override-fixture documentation
+
+A.1 Rename, in YAML key form AND in the guide prose:
+      env-override         → env-overrides
+      executable-override  → executable-overrides
+    Plural makes it obvious the value is a map keyed by
+    NAME, not a single record. Backwards compatibility:
+    the parser MUST accept BOTH forms during this transition
+    (current released ids stay valid; new docs use plural);
+    a deprecation warning is emitted when the singular form
+    is loaded, naming the new key. Drop the singular form
+    in a later increment.
+
+A.2 The guide example for `executable-overrides` MUST show
+    AT LEAST TWO entries (e.g. `docker` + `git`) so the map
+    structure is visually unambiguous. Same for
+    `env-overrides`: at least three vars
+    (e.g. `PATH`, `HOME`, `RUSTUP_HOME`).
+
+A.3 Each `executable-overrides` entry MUST list every required
+    key in the example (per spec 0009 §3.2):
+      name, found, executable, path, command-full,
+      version-full, version
+    No skipping. A short comment on the right-hand side names
+    each one's role. The fixture loader (when refactored per
+    A.6) MUST reject entries missing any of these with a
+    line-numbered error and the list of missing keys.
+
+A.4 The guide MUST document WHERE the fixture file lives.
+    Concretely, three placements are valid in current key:
+      a) `<project-root>/src/test/<name>.yaml` for an audit
+         project laid out by `key audit project new` — the
+         standard placement, exercised by
+         `key audit project test`;
+      b) `<some-dir>/<name>.yaml` for ad-hoc use with the
+         lower-level `key audit test <yaml> <fake-home>`;
+      c) referenced by `--fixture <path>` when added later
+         (out of scope here).
+    The guide prints (a) as the canonical placement and
+    mentions (b) once as the bare-bones fallback.
+
+A.5 The guide example MUST be a fully self-contained
+    fixture file — opening with the YAML document marker,
+    showing both `env-overrides:` and `executable-overrides:`
+    in the same file with multi-entry maps, and ending with
+    a comment giving the canonical filename it would be
+    saved as.
+
+A.6 Strict-key enforcement, two places. Spec 0009 promised
+    line-numbered rejection of malformed fixture YAML; in
+    practice (key 2.9.0) unknown keys are SWALLOWED silently
+    in both fixture files AND tests.yaml entries. This causes
+    real-system state to bleed into tests with no warning.
+    Both loaders MUST be tightened:
+
+A.6.1 Fixture file (env-overrides + executable-overrides):
+      - Reject any unknown top-level key with a line-numbered
+        error and the list of valid top-level keys.
+      - Reject any unknown key inside an executable-overrides
+        entry. Valid keys are exactly the seven listed in
+        spec §A.3 (name, found, executable, path,
+        command-full, version-full, version) — no more, no
+        fewer. Missing required keys are listed individually
+        in the error per the message format below.
+      - Missing-required-key error format:
+          "executable-overrides[\"docker\"] is missing
+           required keys: command-full, version-full (line 17
+           of <fixture-file>)"
+      - Test asserts: (a) unknown top-level key rejected;
+        (b) unknown entry-level key rejected naming both the
+        entry and the offending key; (c) omitting any one of
+        the seven required keys produces an error naming the
+        entry and the missing key.
+
+A.6.2 tests.yaml entries (the file under
+      `<project>/src/test/tests.yaml` that wires controls to
+      fixtures and asserts outcomes):
+      - Reject any unknown key in a test entry with a
+        line-numbered error.
+      - Test asserts: an entry with an extra `expecet:` (typo
+        of `expect:`) is rejected naming the typo, NOT
+        silently ignored. This is the failure mode the user
+        agent reported.
+
+A.6.3 Migration: the existing test fixtures + tests.yaml in
+      this repo MUST be audited for currently-tolerated
+      unknown keys; any found are either typos to fix or
+      deliberate-but-undocumented extensions to elevate to
+      first-class keys (and document in the guide). Run the
+      tightened loaders against the full repo before
+      merging; clean up.
+
+A.7B is-true / is-false bare schema keywords
+
+A.7B.1 The user agent reported: the natural assertion on
+       `<executable:NAME>.found` is "is the boolean field
+       TRUE", but json-matches only offers `is-bool` (which
+       matches EITHER true or false). The workaround
+       `text-matches: '"found":\\s*true'` leaks JSON
+       serialization into the assertion — wrong layer.
+
+A.7B.2 Add two bare schema keywords to json-matches:
+         is-true   — PASS iff the resolved value is the JSON
+                     boolean `true` (NOT truthy; strict).
+         is-false  — PASS iff the resolved value is the JSON
+                     boolean `false`.
+
+A.7B.3 YAML form (mapping under check.json-matches):
+
+         check:
+           json-matches:
+             path: $.found
+             is-true
+
+       (Or the implementer's equivalent; e.g. accepting
+       `is-true: ~` / bare-string in a list of constraints.
+       Pick one canonical form and document it.)
+
+A.7B.4 New Features (children of PredicateJsonMatches per
+       §A.8.2):
+         - PredicateJsonMatchesIsTrue
+         - PredicateJsonMatchesIsFalse
+
+A.7B.5 Tests:
+         - `<executable:docker>` with `found: true`,
+           json-matches `path: $.found, is-true` PASS.
+         - same fixture with `found: false`: same predicate
+           FAILs with a clear message naming the path AND
+           the actual value (not silently mishandling).
+         - `is-false` symmetric.
+         - is-bool still passes for both true AND false
+           (regression).
+
+A.8 json-matches documentation
+
+A.8.1 The current json-matches section is too terse for agents to
+      use confidently. Expand it. Cover at least:
+        - the path syntax accepted (jq-flavor or jsonpath; name
+          which one and pin a tiny grammar);
+        - equality match (`{ path: $.found, equals: true }`);
+        - regex match against a string field (`{ path: $.version,
+          matches-regex: "^20\\." }`) — this is the case the
+          user reported as opaque;
+        - existence check (path resolves vs path-missing);
+        - numeric comparisons if supported;
+        - failure messages (what they include — path, expected,
+          actual).
+
+A.8.2 The guide MUST contain at least one ExampleControl per
+      json-matches MODE (equals / matches-regex / exists /
+      numeric), each tagged with the right Feature. New
+      Features as needed:
+        - PredicateJsonMatchesEquals (parent: PredicateJsonMatches)
+        - PredicateJsonMatchesRegex (parent: PredicateJsonMatches)
+        - (others as the implementation surfaces them).
+      The same parent-and-children pattern shall §1.6 was
+      designed for: terse pass mentions json-matches once,
+      detail subsections expand each mode under the verbose
+      pass.
+
+A.8.3 Tests: round-trip every documented json-matches example
+      through the production loader; assert each parses and
+      evaluates against a fixture as the example claims.
+
+B. EDSL "complete project" emit + end-to-end coverage
+
+B.1 New CLI command:
+
+      key audit guide --emit-project <dir>
+      key audit guide -v --emit-project <dir>
+
+    Materializes a full audit project under `<dir>` derived
+    from the same EDSL tree that drives `key audit guide`.
+    The directory layout MUST match what `key audit project
+    new` produces:
+
+      <dir>/
+        src/
+          main/
+            <name>.yaml         # one or more control files
+                                # populated from ExampleControl
+                                # nodes
+          test/
+            tests.yaml          # asserts each ExampleControl's
+                                # `expect: pass | fail | load-error`
+                                # against its matching fixture
+            <fixture>.yaml      # one fixture file per
+                                # ExampleFixture node, named
+                                # by terse_summary slug
+        target/                 # left empty; created by
+                                # `key audit project build`
+
+    `<dir>` MUST NOT pre-exist (or MUST be empty), to avoid
+    clobbering. Clear error otherwise.
+
+B.2 Combinable with `-v`. With `-v` the materialized project
+    contains EVERY example (including detail nodes); without
+    `-v` only non-detail examples. Both variants must
+    independently pass `key audit project test`.
+
+B.3 Combinable with `--feature=<id>` (per spec 0011). The
+    materialized project then contains only content for
+    that feature plus its descendants. Useful when an agent
+    wants a minimal end-to-end demo for ONE feature.
+
+B.4 Verification path:
+
+      key audit guide --emit-project /tmp/edsl-demo
+      cd /tmp/edsl-demo
+      key audit project test
+
+    MUST pass. This is the user-facing contract.
+
+B.5 Unit tests:
+      a) emit-project to a tempdir; assert the directory
+         layout matches the canonical `audit project new`
+         shape (file presence + filenames);
+      b) load every emitted control file via the production
+         loader; assert each parses and matches the
+         ExampleControl that produced it;
+      c) load tests.yaml; assert it correctly references
+         each control + each fixture by file name;
+      d) assert empty (`-v` off) and full (`-v` on)
+         variants both materialize and pass via the
+         in-process audit-project-test entry point;
+      e) `--feature=<id>` variant materializes a strictly
+         smaller project that still passes.
+
+B.6 Integration test using the RELEASED binary:
+      a) `cargo build --release` (relied on by the existing
+         smoke path; do not duplicate);
+      b) the test invokes `target/release/key audit guide
+         --emit-project <tempdir>` as a subprocess;
+      c) then `target/release/key audit project test`
+         (same binary) against `<tempdir>`;
+      d) asserts exit code 0 and parses the output for the
+         canonical "all controls passed" marker. Failure of
+         either subprocess (or non-zero exit, or missing
+         marker) fails the test with the relevant stderr
+         excerpt.
+    This is the ONLY non-skippable end-to-end test that
+    runs the release binary against EDSL output. If any
+    later increment breaks the round-trip, this test catches
+    it before release.
+
+B.7 Exhaustiveness extension. The coverage test from spec
+    0010 §4.4 / spec 0011 §C.4 is extended:
+      f) FOR EVERY Feature reachable from the verbose pass:
+         the EMITTED-PROJECT semantics produces at least
+         one control file (or fixture entry) that exercises
+         that Feature. The set of Features actually used by
+         the materialized project equals the full Feature
+         set. A Feature appearing in the guide as PROSE only
+         (no ExampleControl / ExampleFixture) is a failure
+         — every Feature must have a runnable demonstration.
+
+A.7 `file-exists` semantics on pseudo-files
+
+A.7.1 Background. Today's behavior:
+        - `<env>` + file-exists: always TRUE (the env pseudo-
+          file is always materializable). OK.
+        - `<executable:NAME>` + file-exists: TRUE iff
+          `snapshot.found` (i.e. iff the binary was found on
+          PATH). This conflates "the virtual JSON file
+          exists" (always true; we always materialize a
+          snapshot) with "the underlying program is on PATH"
+          (sometimes false). Agents read this as: "use
+          file-exists to check executable presence", which
+          works by accident but obscures the model.
+
+A.7.2 Reform. `file-exists` on every pseudo-file is constant
+      TRUE. The pseudo-file's virtual content is always
+      materialized (env reads `std::env::vars()`; executable
+      builds a snapshot whose `found` field reflects the
+      PATH lookup but the snapshot itself always exists).
+      To test whether a program is on PATH, the user MUST
+      use `json-matches` against the `found` field:
+
+          file:
+            path: <executable:docker>
+            check:
+              json-matches:
+                path: $.found
+                equals: true
+
+      (Or equivalent json-matches sugar — implementer's
+      choice; one canonical form.) Document this prominently
+      in the executable section of the guide as the ONLY
+      correct way to assert presence.
+
+A.7.3 Implementation. Replace the current
+      `(PseudoFile::Executable(_), PseudoKind::Executable
+      { snapshot }) => if snapshot.found ...` arm in
+      src/rules/predicates.rs:158-164 with `Ok(())`. Drop
+      the now-unreachable Err branch.
+
+A.7.4 Migration. This is a behavior change. Tests that used
+      to rely on `file-exists` failing for an absent
+      executable WILL now PASS. Audit every test/fixture in
+      the repo for `<executable:NAME>` + `file-exists`
+      pairs whose expected outcome was FAIL; rewrite them
+      to use `json-matches` on `.found` per A.7.2. The
+      release notes for the next version (out of scope here)
+      MUST call this out.
+
+A.7.5 Tests:
+      - `<executable:does-not-exist>` + `file-exists`: PASS
+        (was FAIL);
+      - `<executable:does-not-exist>` + `json-matches:
+        $.found == true`: FAIL with a clear message
+        naming the pseudo-file and the JSON path;
+      - `<env>` + `file-exists`: PASS (regression — same
+        behavior as today, just now documented as
+        canonical).
+
+A.7.6 Guide updates: in the executable-pseudo-file section,
+      add a callout box (or equivalent) explaining the
+      distinction and showing both the wrong way
+      (`file-exists` — PASSes constantly, doesn't test
+      anything useful) and the right way (`json-matches`
+      on `.found`). Mark the section as `detail: false`
+      so it appears in the terse pass — this is a common
+      footgun and hiding it from the default guide is
+      what caused the agent confusion.
+
+B.8 Interactive interpretation of the EDSL
+
+B.8.1 The previous draft of this section introduced a
+      `Feature::interactive_buildable(self) -> bool`
+      partition. That distinction is unnecessary. Drop it.
+      Every authored YAML element belongs to a node kind
+      the EDSL already enumerates (ExampleControl,
+      ExampleFixture, FeatureRef, Section, Prose, …). Of
+      those, ExampleControl and ExampleFixture are the
+      only kinds that represent something a user types;
+      everything else is meta. The EDSL already knows the
+      partition.
+
+B.8.2 The invariant — sharper statement: every Control AST
+      and every TestEntry AST that key knows how to load
+      MUST be buildable interactively. The EDSL guide
+      examples are the absolute MINIMUM coverage; the
+      compiler is torture-tested against many more inputs.
+
+B.8.3 New test-only EDSL-independent component: the
+      "AST → menu-interaction compiler". Given any
+      well-formed Control AST (or test entry AST), it emits
+      the EXACT sequence of menu choices + field values
+      that, when fed to `key audit add`'s interactive
+      engine, would produce that AST. Lives in
+      `tests/support/menu_compile.rs` (or similar — name
+      finalized during implementation). Pure function from
+      AST to `Vec<InteractiveInput>`; no I/O.
+
+B.8.4 Round-trip property: for any well-formed AST `A`,
+      `interactive_engine(menu_compile(A)) == A` —
+      structurally. This is the load-bearing property for
+      the entire interactive surface.
+
+B.8.5 Sources of test ASTs (torture-test the compiler from
+      multiple angles):
+
+      a) Every ExampleControl in the verbose EDSL guide
+         (the minimum). Per spec §B.7 each Feature is
+         exercised by at least one ExampleControl, so
+         passing this set proves variant coverage.
+
+      b) Every Control AST currently loadable by `key
+         audit run` from the in-tree fixture corpus
+         (tests/fixtures/**/*.yaml). Walk the corpus,
+         load each YAML through the production loader,
+         feed each parsed AST through the round-trip.
+         This covers REAL examples written by humans, not
+         just the curated guide minimum.
+
+      c) Property-based fuzz via `proptest` (already a
+         common dep, or add it): generate well-formed
+         random Control ASTs respecting the schema, run
+         the round-trip property over `cases = 1024` (or
+         the proptest default — finalize during
+         implementation). Shrinks on failure to the
+         minimal counter-example.
+
+         Generator MUST be finite and bounded:
+         - Use a `fuel: usize` parameter passed top-down,
+           decremented on each recursive descent. When fuel
+           hits 0, the generator picks a NON-recursive leaf
+           variant (a base predicate or a simple
+           proposition like `file: { path, check: bare }`).
+           No fuel-zero branch may recurse.
+         - Default fuel cap: 8 levels of nesting
+           (finalize during implementation; tune if
+           proptest cases get pathologically slow).
+         - Independent width cap on list-shaped variants
+           (`all`, `any`, `forall.files`, `exists.files`):
+           max children per node, e.g. 5. Otherwise a
+           proptest collection strategy can blow up
+           sub-tree count even at small depth.
+         - Total node-count budget per generated AST,
+           e.g. 200 nodes, to defend against
+           depth*width*recursion blow-ups that pass the
+           per-axis caps but compose badly.
+         - Generator unit-tests: assert no panic, no
+           timeout, and bounded size for `cases = 4096`
+           generations to confirm the bounds hold under
+           pressure.
+
+      d) Hand-curated edge cases under
+         `tests/fixtures/menu_torture/*.yaml` for shapes
+         the EDSL guide does NOT show (deeply nested
+         when/then, `not(not(not(file-exists)))`,
+         conditional propositions inside conditional
+         predicates, etc.). Implementer adds at least 5
+         such cases to seed the corpus; future
+         contributors expand.
+
+B.8.6 The same round-trip property applies to TestEntry
+      ASTs (the per-test-case structure inside
+      tests.yaml) IF an interactive authoring path
+      exists for them. If `key audit add` covers test
+      entries: same four sources (a–d) apply, with the
+      EDSL providing fixture-side examples. If it does
+      not: file an OUT-OF-SCOPE note here and a follow-up
+      increment to add interactive test-entry authoring,
+      but DO NOT skip the property — at minimum land a
+      stubbed test that asserts `key audit add` rejects
+      attempts to author test entries with a clear
+      "not yet supported" error, so the gap is visible.
+
+B.8.7 Failure-mode contract: if the round-trip property
+      fails for a specific AST, the test output MUST
+      include:
+      - the AST that failed (Debug print);
+      - the input sequence menu_compile produced for it;
+      - the AST the engine actually built (which may be
+        a partial / different AST);
+      - the structural diff between the two.
+      No silent failures.
+
+C. Out of scope
+- Renaming the `--emit-project` flag to a separate
+  subcommand (`key audit project emit-from-guide` or
+  similar) — that's nicer ergonomics but a follow-up.
+- Removing the singular `env-override` /
+  `executable-override` forms entirely (deprecation only
+  in this iteration; removal in a later one).
+- Adding a `--fixture <path>` flag to `key audit test` —
+  out of scope; mentioned in A.4 only as "future".
+
+D. Verification
+- `./test.sh` PASS — including the new fixture-loader
+  missing-key tests (§A.6), the unit tests (§B.5), the
+  exhaustiveness extension (§B.7), and the
+  release-binary integration test (§B.6).
+- `key audit guide` shows the new fixture documentation
+  with multi-entry maps.
+- `key audit guide --emit-project /tmp/x && cd /tmp/x &&
+  key audit project test` PASS by hand.
+- Commit; release tag is the receptionist's call.

@@ -14,6 +14,7 @@
 #![allow(dead_code)]
 
 pub mod coverage;
+pub mod emit_project;
 pub mod feature_bearing;
 pub mod features;
 pub mod filter;

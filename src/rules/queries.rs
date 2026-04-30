@@ -110,6 +110,25 @@ fn evaluate_data_schema(schema: &DataSchema, value: &serde_json::Value) -> Resul
                 Err(format!("expected bool, got {}", json_type_name(value)))
             }
         }
+        // Spec/0013 §A.7B — strict equality with the JSON boolean true/false.
+        DataSchema::IsTrue => match value.as_bool() {
+            Some(true) => Ok(()),
+            Some(false) => Err("expected `true`, got `false`".into()),
+            None => Err(format!(
+                "expected `true`, got {} ({})",
+                json_type_name(value),
+                value
+            )),
+        },
+        DataSchema::IsFalse => match value.as_bool() {
+            Some(false) => Ok(()),
+            Some(true) => Err("expected `false`, got `true`".into()),
+            None => Err(format!(
+                "expected `false`, got {} ({})",
+                json_type_name(value),
+                value
+            )),
+        },
         DataSchema::IsNull => {
             if value.is_null() {
                 Ok(())
@@ -271,6 +290,47 @@ mod tests {
     fn schema_is_bool() {
         assert!(evaluate_data_schema_json_str(&DataSchema::IsBool, "true").is_ok());
         assert!(evaluate_data_schema_json_str(&DataSchema::IsBool, "42").is_err());
+    }
+
+    /// Spec/0013 §A.7B.5 — `is-true` PASSes on JSON `true`, FAILs on `false`,
+    /// FAILs on non-bool. `is-bool` continues to accept both for regression.
+    #[test]
+    fn schema_is_true_strict() {
+        assert!(evaluate_data_schema_json_str(&DataSchema::IsTrue, "true").is_ok());
+        let err = evaluate_data_schema_json_str(&DataSchema::IsTrue, "false").unwrap_err();
+        assert!(err.contains("expected `true`"), "got {}", err);
+        let err = evaluate_data_schema_json_str(&DataSchema::IsTrue, "42").unwrap_err();
+        assert!(err.contains("expected `true`"), "got {}", err);
+        // Regression: is-bool still passes on both.
+        assert!(evaluate_data_schema_json_str(&DataSchema::IsBool, "false").is_ok());
+        assert!(evaluate_data_schema_json_str(&DataSchema::IsBool, "true").is_ok());
+    }
+
+    #[test]
+    fn schema_is_false_strict() {
+        assert!(evaluate_data_schema_json_str(&DataSchema::IsFalse, "false").is_ok());
+        let err = evaluate_data_schema_json_str(&DataSchema::IsFalse, "true").unwrap_err();
+        assert!(err.contains("expected `false`"), "got {}", err);
+    }
+
+    /// Spec/0013 §A.7B.5 (executable found scenario) — assert is-true behavior
+    /// against an `<executable:NAME>` snapshot's `.found` field shape.
+    #[test]
+    fn schema_is_true_against_executable_snapshot_shape() {
+        let schema = DataSchema::IsObject(vec![("found".into(), DataSchema::IsTrue)]);
+        // Found = true: PASS
+        assert!(
+            evaluate_data_schema_json_str(&schema, r#"{"found": true, "name": "docker"}"#).is_ok()
+        );
+        // Found = false: FAIL with a message naming the path AND value.
+        let err = evaluate_data_schema_json_str(&schema, r#"{"found": false, "name": "docker"}"#)
+            .unwrap_err();
+        assert!(err.contains("found"), "expected path in error; got {}", err);
+        assert!(
+            err.contains("expected `true`"),
+            "expected actual-value mention; got {}",
+            err
+        );
     }
 
     #[test]

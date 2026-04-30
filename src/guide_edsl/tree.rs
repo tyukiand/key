@@ -440,6 +440,45 @@ fn predicates_section() -> GuideNode {
                 terse_summary: Some("json-matches worked example"),
                 yaml: "controls:\n  - id: JSON-EX\n    title: json-matches predicate\n    description: validate a JSON file against a typed schema\n    remediation: align the file shape to the schema\n    check:\n      file:\n        path: ~/.config/app.json\n        check:\n          json-matches:\n            is-object:\n              settings:\n                is-object:\n                  theme: is-string\n",
             },
+            // Spec/0013 §A.8 — pin the json-matches addressing model.
+            GuideNode::Prose {
+                text: "**json-matches addressing model.** json-matches uses *structured \
+                       schema navigation* — there is no separate `path:` syntax. \
+                       Use `is-object` to descend into a key, `is-array` with `at: \
+                       <index>` to descend into an array slot, and the leaf bare \
+                       keywords (`is-string`, `is-number`, `is-bool`, `is-true`, \
+                       `is-false`, `is-null`, `anything`) — or `is-string-matching: \
+                       <regex>` for a string-against-regex constraint — to assert \
+                       on a value. Failure messages name the exact navigation path \
+                       (e.g. `at key \"settings\": at key \"theme\": expected string`) \
+                       plus the actual JSON type seen.",
+                detail: false,
+                terse_summary: None,
+            },
+            // Spec/0013 §A.7B — is-true / is-false demos against <executable:NAME>.
+            GuideNode::ExampleControl {
+                feature: Feature::PredicateJsonMatchesIsTrue,
+                expect: ExampleExpect::Pass,
+                detail: true,
+                terse_summary: Some("json-matches is-true (strict boolean true)"),
+                yaml: "controls:\n  - id: JSON-IS-TRUE-EX\n    title: json-matches is-true (strict)\n    description: PASS iff the resolved value is the JSON boolean `true` (not truthy; not just any bool).\n    remediation: ensure the field is the literal `true`\n    check:\n      file:\n        path: \"<executable:docker>\"\n        check:\n          json-matches:\n            is-object:\n              found: is-true\n",
+            },
+            GuideNode::ExampleControl {
+                feature: Feature::PredicateJsonMatchesIsFalse,
+                expect: ExampleExpect::Pass,
+                detail: true,
+                terse_summary: Some("json-matches is-false (strict boolean false)"),
+                yaml: "controls:\n  - id: JSON-IS-FALSE-EX\n    title: json-matches is-false (strict)\n    description: PASS iff the resolved value is the JSON boolean `false`.\n    remediation: ensure the field is the literal `false`\n    check:\n      file:\n        path: \"<executable:never-installed-tool>\"\n        check:\n          json-matches:\n            is-object:\n              found: is-false\n",
+            },
+            // Spec/0013 §A.8.2 — regex mode: `is-string-matching` claims the
+            // PredicateJsonMatchesRegex feature.
+            GuideNode::ExampleControl {
+                feature: Feature::PredicateJsonMatchesRegex,
+                expect: ExampleExpect::Pass,
+                detail: true,
+                terse_summary: Some("json-matches is-string-matching (regex)"),
+                yaml: "controls:\n  - id: JSON-REGEX-EX\n    title: json-matches is-string-matching (regex)\n    description: regex constraint on a string field; FAILs cleanly if the field is missing or non-string.\n    remediation: align the version field to the expected pattern\n    check:\n      file:\n        path: \"<executable:docker>\"\n        check:\n          json-matches:\n            is-object:\n              version:\n                is-string-matching: \"^[0-9]+\\\\.[0-9]+\"\n",
+            },
             GuideNode::ExampleControl {
                 feature: Feature::PredicateYamlMatches,
                 expect: ExampleExpect::Pass,
@@ -510,7 +549,22 @@ fn pseudo_files_section() -> GuideNode {
                 expect: ExampleExpect::Pass,
                 detail: false,
                 terse_summary: None,
-                yaml: "controls:\n  - id: EXEC-EX\n    title: \"<executable:NAME> pseudo-file\"\n    description: \"snapshot of an executable resolved on PATH; use file-exists for presence or json-matches for shape.\"\n    remediation: install the executable\n    check:\n      file:\n        path: \"<executable:docker>\"\n        check: file-exists\n",
+                yaml: "controls:\n  - id: EXEC-EX\n    title: \"<executable:NAME> pseudo-file\"\n    description: \"snapshot of an executable resolved on PATH; file-exists is constant TRUE (snapshot always materializes), so use json-matches on .found to test presence.\"\n    remediation: install the executable\n    check:\n      file:\n        path: \"<executable:docker>\"\n        check: file-exists\n",
+            },
+            // Spec/0013 §A.7 + §A.7.6 — file-exists on pseudo-files is a
+            // common footgun. Surface it in the TERSE pass (detail: false).
+            GuideNode::Prose {
+                text: "**Heads-up: `file-exists` on `<executable:NAME>` is constant TRUE.** \
+                       The pseudo-file's snapshot is ALWAYS materialized (its `.found` field \
+                       reflects the PATH lookup, but the snapshot itself exists either way). \
+                       To assert that a program is on PATH, use `json-matches` on `.found`:\n\n\
+                       ```yaml\n\
+                       file:\n  path: <executable:docker>\n  check:\n    json-matches:\n      \
+                       is-object:\n        found: is-true\n```\n\n\
+                       Same applies to `<env>` (always materializes from \
+                       `std::env::vars()` or the env-override map).",
+                detail: false,
+                terse_summary: None,
             },
             // Detail caveats — split per-root so the §C same-root invariant
             // can attribute each rerun line to a single `--feature=<id>`.
@@ -556,19 +610,47 @@ fn test_fixtures_section() -> GuideNode {
                 detail: false,
                 terse_summary: None,
             },
+            // Spec/0013 §A.4 — name the canonical placement once, prominently.
+            GuideNode::Prose {
+                text: "Fixture YAMLs live at `<project>/src/test/resources/<NAME>/pseudo-file-overrides.yaml` \
+                       (the canonical placement, exercised by `key audit project test`). \
+                       Bare-bones fallback: `<some-dir>/<name>.yaml` for ad-hoc use with \
+                       the lower-level `key audit test <yaml> <fake-home>` (out of scope here).",
+                detail: false,
+                terse_summary: None,
+            },
+            // Spec/0013 §A.5 — each override fixture is a self-contained YAML
+            // file showing BOTH `env-overrides:` and `executable-overrides:` in
+            // the same document, with multi-entry maps. The same YAML
+            // round-trips through the production loader (used by the spec/0013
+            // §B emit-project test).
             GuideNode::ExampleFixture {
                 feature: Feature::TestFixtureEnvOverride,
-                name: "env-override",
+                // Slug doubles as the materialized fixture-dir name under
+                // src/test/resources/. Keep it stable.
+                name: "env-overrides-multi",
                 detail: true,
-                terse_summary: Some("<env> fixture override YAML"),
-                yaml: "env-override:\n  PATH: \"/usr/bin:/home/u/.cargo/bin\"\n  RUSTUP_HOME: \"/home/u/.rustup\"\n",
+                terse_summary: Some("<env> fixture override YAML (multi-entry, canonical)"),
+                yaml: "# Canonical placement: <project>/src/test/resources/env-overrides-multi/pseudo-file-overrides.yaml\n# Spec/0013 §A.2 — at least three vars to make the map structure visually unambiguous.\nenv-overrides:\n  PATH: \"/usr/bin:/home/u/.cargo/bin\"\n  HOME: \"/home/u\"\n  RUSTUP_HOME: \"/home/u/.rustup\"\n",
             },
             GuideNode::ExampleFixture {
                 feature: Feature::TestFixtureExecutableOverride,
-                name: "executable-override",
+                name: "executable-overrides-multi",
                 detail: true,
-                terse_summary: Some("<executable:NAME> fixture override YAML"),
-                yaml: "executable-override:\n  docker:\n    name: docker\n    found: true\n    executable: true\n    path: /usr/bin/docker\n    command-full: docker --version\n    version-full: Docker version 20.10.7\n    version: \"20.10.7\"\n",
+                terse_summary: Some("exec-overrides fixture YAML (multi-entry, all 7 keys)"),
+                yaml: "# Canonical placement: <project>/src/test/resources/executable-overrides-multi/pseudo-file-overrides.yaml\n# Spec/0013 §A.3 — every entry MUST list all 7 keys:\n#   name, found, executable, path, command-full, version-full, version.\n# Spec/0013 §A.2 — at least two entries (here: docker + git) so the map\n# structure is visually unambiguous (it is keyed by NAME).\nexecutable-overrides:\n  docker:\n    name: docker                          # entry id (must match the map key)\n    found: true                           # PATH lookup result\n    executable: true                      # is the resolved file +x\n    path: /usr/bin/docker                 # absolute path on PATH\n    command-full: \"docker --version\"      # the command key invoked\n    version-full: \"Docker version 20.10.7, build f0df350\"  # raw stdout from above\n    version: \"20.10.7\"                    # extracted semver-ish\n  git:\n    name: git                             # second entry — proves the map is plural\n    found: true\n    executable: true\n    path: /usr/bin/git\n    command-full: \"git --version\"\n    version-full: \"git version 2.43.0\"\n    version: \"2.43.0\"\n",
+            },
+            // Spec/0013 §A.5 — call out that BOTH sections may live in the
+            // same canonical fixture file. (Separate ExampleFixtures above
+            // keep the per-Feature filter clean; this Prose names the
+            // both-in-one form for completeness.)
+            GuideNode::Prose {
+                text: "Both sections may live in the same fixture file: \
+                       open with `env-overrides:` and `executable-overrides:` at \
+                       the top level. Either section may be omitted; both forms \
+                       above round-trip through the production loader.",
+                detail: false,
+                terse_summary: None,
             },
             GuideNode::FeatureRef {
                 feature: Feature::TestFixtureMalformedRejection,

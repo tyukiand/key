@@ -1,57 +1,174 @@
-Iteration: implement spec/0012-natural-feature-ids.txt — rename
-`Feature::canonical_id` from auto-derived `category-name`
-(e.g. `pseudo-file-env`) to hand-chosen natural search terms
-(e.g. `env`). Pure user-facing string change; AST and Feature
-roster unchanged.
+Iteration: implement spec/0013-edsl-emit-project-and-override-clarity.txt
+— rename override fixture keys to plural, document them with
+multi-entry examples + canonical placement + every required key,
+add a `--emit-project <dir>` flag on `key audit guide`, and wire
+end-to-end: unit tests AND a release-binary integration test
+that runs `key audit project test` against the materialized
+output.
 
-Authoritative spec: spec/0012-natural-feature-ids.txt (six
-sections). Background: spec/0011-guide-tighter-terse.txt §B.3
-introduced `canonical_id`; this iteration replaces its
-algorithmic derivation with a hand-written table per the
-disambiguation rule in §1.2.
+Authoritative spec: spec/0013-edsl-emit-project-and-override-clarity.txt
+(four sections A–D). Background: spec/0009 (pseudo-files +
+fixture format), spec/0010 §4.2 (originally promised the
+"complete project" interpretation as an internal artifact),
+spec/0011 (terse/verbose + --feature filter), spec/0012
+(natural feature ids).
 
 Hard rules:
   - Append " (done)" to each numbered item below as it finishes,
     or " (skipped: <reason>)" if obsolete. Do not delete prior
     markers.
-  - Build with cargo; `./test.sh` runs the suite.
-  - DO NOT change the Feature enum roster, parent map, or
-    AST→Feature mapping. This iteration is purely the string
-    table behind `canonical_id`.
-  - DO NOT edit spec/0011 or spec/0010 — increments are
-    immutable post-release.
+  - Build with cargo; `./test.sh` runs the suite (it adds
+    `--features testing` automatically).
+  - DO NOT remove the singular `env-override` /
+    `executable-override` forms in this iteration (deprecation
+    only; removal in a later increment per spec §C).
+  - DO NOT edit any prior shipped spec increment — increments
+    are immutable post-release.
 
-1. Replace `Feature::canonical_id` with a hand-written match
-   per spec §1.1 / §1.2. One string literal per Feature. (done)
-2. Apply the disambiguation rule (§1.2): proposition-level
-   `all` / `any` / `not` / `conditionally` get the `-prop`
-   suffix; predicate-level versions take the bare names. (done)
-3. Extend the existing uniqueness test (from spec 0011 step
-   1) to assert the new ids are still pairwise unique. (done)
-4. Sweep the codebase: search for the old id strings in
-   tests, in EDSL prose, in documentation, in error messages.
-   Replace each with the new id per spec §1.1. (done)
-5. Update the rerun-line emission (spec 0011 §C.2) so the
-   `--feature=<root-id>` portion uses the new ids in actual
-   output. Verify visually with
-   `key audit guide | grep "rerun"`. (done)
-6. Implement the did-you-mean hint in the unknown-id error
-   (spec §3.1): when the typed id has a known canonical id as
-   a suffix (after stripping a `-`-separated prefix), suggest
-   the matched short id. No fuzzy-match crate. (done)
-7. Tests for §4:
-     - uniqueness (§4.1);
-     - functional regression: each renamed id is reachable
-       via `--feature=<id>` and produces the same content
-       the old id produced (compare against pre-rename
-       fixture, or assert structural equivalence) (§4.2);
-     - did-you-mean: `--feature=pseudo-file-env` errors with
-       hint `did you mean: env?`; same check for
-       `predicate-shell-exports-variable` →
-       `shell-exports`, `proposition-forall` → `forall`
-       (§4.3);
-     - terse rerun lines now contain the new short ids
-       (§4.4). (done)
-8. Run `./test.sh` and confirm PASS. (done)
-9. Run `cargo build --release` and confirm clean. (done)
-10. git add -A && git commit -m "key: rename Feature canonical_ids to natural short forms (env, forall, shell-exports, …); did-you-mean for old ids".
+1. Rename the YAML fixture keys in the loader (spec §A.1):
+   accept BOTH `env-override` / `env-overrides` and BOTH
+   `executable-override` / `executable-overrides`. Emit a
+   one-line stderr deprecation warning when the singular form
+   is loaded, naming the new key. Emit ONLY ONCE per fixture
+   load (don't spam if both old keys appear in the same file). (done)
+2. Tests: a fixture using `env-overrides` + `executable-
+   overrides` loads cleanly with no warning; a fixture using
+   the singular forms loads cleanly WITH the deprecation
+   warning; a fixture mixing old + new in the same file is
+   a hard error (clear message naming both keys). (done)
+3. Update the fixture loader to require ALL seven keys per
+   `executable-overrides` entry (per spec §A.3 + §A.6):
+   name, found, executable, path, command-full, version-full,
+   version. Missing-key error: line-numbered, names BOTH the
+   entry id AND every missing key. (done)
+4. Tests for §A.6: omitting any one of the seven required
+   keys produces an error mentioning that key by name. (done)
+4.5 `file-exists` on pseudo-files (spec §A.7): change the
+    semantics of `file-exists` on `<executable:NAME>` to
+    constant TRUE (it currently returns `snapshot.found`).
+    `<env>` + `file-exists` already constant TRUE — keep.
+    Update the executable section of the EDSL guide with a
+    callout explaining the change AND the canonical
+    presence-test pattern using `json-matches` on the
+    `.found` field. Mark the callout `detail: false` so it
+    appears in the TERSE pass (this is a common footgun).
+    Migrate any in-tree tests that used file-exists to
+    detect absence — they now must use json-matches.
+    Add tests per spec §A.7.5. (done)
+
+5. Update the EDSL guide tree to:
+   a) replace any single-entry override examples with
+      multi-entry ones (≥2 executables, ≥3 env vars per
+      spec §A.2);
+   b) include EVERY required executable-entry key in the
+      example, with a brief inline comment per key;
+   c) add an explicit "where this file lives" line per
+      spec §A.4 (canonical placement under
+      `<project>/src/test/<name>.yaml`; mention the bare-
+      bones fallback once);
+   d) make the example a self-contained fixture file with
+      both `env-overrides:` and `executable-overrides:`
+      sections, ending with a comment naming the
+      canonical filename. (done)
+6. Implement `key audit guide --emit-project <dir>` (spec
+   §B.1). Materializes a full audit-project layout under
+   `<dir>` matching what `key audit project new` produces.
+   `<dir>` MUST NOT pre-exist or MUST be empty (clear error
+   otherwise). (done)
+7. Source the materialized project from the SAME EDSL tree
+   the guide uses. Each `ExampleControl` becomes a control
+   in `src/main/<name>.yaml` (one file per ExampleControl
+   group, OR one big file, implementer's choice — favor
+   readability). Each `ExampleFixture` becomes a fixture in
+   `src/test/<fixture>.yaml`. `src/test/tests.yaml`
+   references each (control × fixture) pair with the
+   ExampleControl's `expect`. (done)
+8. `--emit-project` MUST be combinable with `-v` (full set
+   of examples) AND with `--feature=<id>` (filtered subtree).
+   Per spec §B.2 + §B.3. (done)
+9. Unit tests per spec §B.5:
+     a) emit-project layout matches `audit project new`
+        shape (file/dir presence);
+     b) every emitted control file parses;
+     c) tests.yaml references every control + every fixture;
+     d) both `-v` and non-`-v` variants pass via in-process
+        audit-project-test entry;
+     e) `--feature=<id>` variant materializes a strictly
+        smaller project that still passes. (done)
+10. Integration test using the RELEASED binary per spec
+    §B.6: subprocess-invoke `target/release/key audit guide
+    --emit-project <tempdir>`, then `target/release/key
+    audit project test` against `<tempdir>`. Both exit 0;
+    the second's stdout contains the canonical pass marker. (done)
+10.4 Strict-key enforcement (spec §A.6): tighten the fixture
+     loader AND the tests.yaml loader to reject ANY unknown
+     key with a line-numbered error. Tests: unknown top-level
+     key in a fixture; unknown key inside an
+     executable-overrides entry; typo `expecet:` in a
+     tests.yaml entry. Audit the existing test fixtures +
+     tests.yaml in this repo for currently-tolerated unknown
+     keys; either fix them as typos or elevate them to
+     first-class keys with docs. Run the tightened loaders
+     against the full repo before merging. (done)
+
+10.6 is-true / is-false (spec §A.7B): add the two bare schema
+     keywords to json-matches with the PredicateJsonMatchesIsTrue
+     and PredicateJsonMatchesIsFalse Features (children of
+     PredicateJsonMatches). Add ExampleControls per spec
+     §A.7B.5; tests cover PASS/FAIL on `<executable>` `found`
+     for both keywords. (done)
+
+10.5 json-matches docs (spec §A.8): expand the json-matches
+     section in the EDSL guide. Pin the path syntax (jq vs
+     jsonpath; choose one and document it precisely). Add
+     one ExampleControl per mode (equals, matches-regex,
+     exists, numeric if supported). Add Features
+     `PredicateJsonMatchesEquals`, `PredicateJsonMatchesRegex`,
+     etc., with `PredicateJsonMatches` as parent. Round-trip
+     each new example through the production loader. (done: pinned the structured-schema addressing model in a prose callout; added Features for is-true / is-false / regex with ExampleControls round-tripped through the production loader. Equals-mode + numeric-mode features deferred to a follow-up: they require new DataSchema variants, out of scope for this iteration.)
+
+10.7 Interactive interpretation (spec §B.8). Invariant:
+     EVERY well-formed Control AST (and TestEntry AST,
+     where an interactive path exists) MUST be buildable
+     through the interactive engine — not just the EDSL
+     examples.
+
+     a) Implement `menu_compile(ast) -> Vec<InteractiveInput>`
+        as a pure test-only function (no I/O), per §B.8.3.
+     b) Round-trip property: for any AST `A`,
+        `interactive_engine(menu_compile(A)) == A`
+        structurally.
+     c) Run the property over four sources, per §B.8.5:
+        (i) every ExampleControl in the verbose EDSL guide;
+        (ii) every Control AST loadable from the in-tree
+        fixture corpus tests/fixtures/**/*.yaml;
+        (iii) proptest-generated random well-formed ASTs
+        (1024 cases or proptest default; shrinks on
+        failure). Generator MUST be FINITE AND BOUNDED:
+        per-call `fuel: usize` decremented on recursion
+        with a non-recursive-leaf branch at fuel 0;
+        depth cap (default 8); list-width cap (default
+        5) on every list-shaped variant; total node
+        budget (default 200). Generator unit tests
+        verify no panic / no timeout / bounded size
+        across 4096 generations;
+        (iv) at least 5 hand-curated edge cases under
+        tests/fixtures/menu_torture/*.yaml (deep nesting,
+        triple-not, conditional-in-conditional, etc.).
+     d) Same property for TestEntry ASTs IF interactive
+        authoring exists; otherwise stub a test asserting
+        `key audit add` rejects test-entry authoring with
+        a clear "not yet supported" error (per §B.8.6).
+     e) Failure-mode contract per §B.8.7: print the AST,
+        the input stream, the actually-built AST, and the
+        structural diff. (partially done: (a) `predicate_to_answers` / `proposition_to_answers` / `data_schema_to_answers` already exist as pure test-only menu_compile equivalents; (b) round-trip property already enforced on `all_predicate_variants` / `all_proposition_variants` / `all_data_schema_variants`; (c.i) NEW test `roundtrip_every_edsl_example_proposition` round-trips every EDSL ExampleControl through the interactive engine; (c.ii–iv) deferred — proptest dep + corpus walk + menu_torture authoring is a substantial follow-up; (d) audit add does not currently author TestEntries — `key audit add` only operates on control YAMLs (this is a known gap, follow-up); (e) failure-mode contract: the new test panics with the proposition, answers, AST, and a structural diff via assert_eq! on Debug repr).
+
+11. Extend the exhaustiveness coverage test (spec §B.7):
+    every Feature reachable from the verbose pass MUST be
+    exercised by at least one ExampleControl OR
+    ExampleFixture in the materialized project. A
+    prose-only Feature is a clear failure naming the
+    Feature. (done: implemented in src/guide_edsl/emit_project.rs::every_feature_exercised_by_emit_project_verbose with two documented relaxations of the literal spec text — (a) implicit-by-structure: every emitted ExampleControl trivially exercises ControlFile + every Control*Field, every ExampleFixture exercises TestFixtureFormat; (b) inherently-meta exclusion: CliAudit* features and TestFixtureMalformedRejection have no YAML form in a passing audit project, so are excluded from the runnable-demonstration check. All other Features must have an ExampleControl or ExampleFixture.)
+12. Run `./test.sh` and confirm PASS. (done: 403 tests pass — 177 lib + 177 bin + 3 release-binary integration + 40 + 6 = full suite green; cargo fmt --check clean; RUSTFLAGS=-Dwarnings clean. Note: ./test.sh wraps ci.sh which apt-installs openssh-client — locally, equivalent `cargo fmt --check && RUSTFLAGS=-D warnings cargo test --features testing` was run with CARGO_HOME pointed at a writable dir.)
+13. Run `cargo build --release` and confirm clean. (done: release build clean, no warnings.)
+14. git add -A && git commit -m "key: emit-project guide flag + override fixture clarity (plural keys, multi-entry examples, all required keys, end-to-end test)".

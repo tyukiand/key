@@ -148,6 +148,12 @@ pub enum AuditCommand {
         /// `env`). Combinable with `-v`.
         #[arg(long = "feature")]
         feature: Option<String>,
+
+        /// Materialize a complete audit project under <DIR> from the same
+        /// EDSL tree the guide renders (spec/0013 §B.1). Combinable with
+        /// `-v` and `--feature=<id>`.
+        #[arg(long = "emit-project", value_name = "DIR")]
+        emit_project: Option<String>,
     },
 
     /// Test audit controls against a fixture directory

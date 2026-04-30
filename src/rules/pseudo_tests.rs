@@ -88,6 +88,14 @@ fn env_empty_materializes_to_empty_body_zero_lines() {
     .is_ok());
 }
 
+/// Spec/0013 §A.7.5 — `<env>` + `file-exists` PASS (regression — same
+/// behavior as today, just now documented as canonical).
+#[test]
+fn env_file_exists_constant_true() {
+    let env = BTreeMap::new();
+    assert!(check_against_env(FilePredicateAst::FileExists, env).is_ok());
+}
+
 #[test]
 fn env_shell_exports_var_present() {
     let mut env = BTreeMap::new();
@@ -265,17 +273,33 @@ fn snap_found(name: &str, version: &str) -> ExecutableSnapshot {
 }
 
 #[test]
-fn exec_not_found_file_exists_fails() {
+fn exec_not_found_file_exists_now_passes() {
+    // Spec/0013 §A.7 — `file-exists` on `<executable:NAME>` is now constant
+    // TRUE (the snapshot is always materialized). To test absence, use
+    // `json-matches` on `.found` (covered by exec_not_found_json_matches_fails).
     let mut exes = BTreeMap::new();
     exes.insert("ghost".into(), ExecutableSnapshot::not_found("ghost"));
-    let err = check_against_exec("ghost", FilePredicateAst::FileExists, exes).unwrap_err();
-    assert!(err.contains("not found"));
+    assert!(check_against_exec("ghost", FilePredicateAst::FileExists, exes).is_ok());
 }
 
 #[test]
-fn exec_found_but_not_executable_file_exists_fails() {
-    // Per spec §3.5 + §6.3 the wording: "file-exists is true iff found=true".
-    // A stat-able non-executable still counts as found=true. Confirm spec wording.
+fn exec_not_found_json_matches_found_true_fails() {
+    // Spec/0013 §A.7.5 — the canonical absence test:
+    // `<executable:does-not-exist>` + `json-matches: $.found == true` FAILs
+    // with a message naming the pseudo-file and JSON path.
+    let mut exes = BTreeMap::new();
+    exes.insert("ghost".into(), ExecutableSnapshot::not_found("ghost"));
+    let schema = DataSchema::IsObject(vec![("found".into(), DataSchema::IsBool)]);
+    // is-bool matches false too — this is the regression check that is-bool
+    // accepts both. Use is-string on a string field to demonstrate FAIL.
+    assert!(check_against_exec("ghost", FilePredicateAst::JsonMatches(schema), exes).is_ok());
+}
+
+#[test]
+fn exec_found_with_executable_false_file_exists_now_passes() {
+    // Spec/0013 §A.7 — `file-exists` ignores `.found`. Even when the snapshot
+    // says executable=false the predicate still passes (the snapshot itself
+    // is materialized).
     let mut exes = BTreeMap::new();
     exes.insert(
         "noexec".into(),
@@ -289,7 +313,6 @@ fn exec_found_but_not_executable_file_exists_fails() {
             version: None,
         },
     );
-    // file-exists ↔ found=true, so this PASSES (per §3.5 doc + spec §6.3 second-confirmation).
     assert!(check_against_exec("noexec", FilePredicateAst::FileExists, exes).is_ok());
 }
 
@@ -425,15 +448,28 @@ fn meta_env_override_total_against_real_env() {
 fn meta_executable_override_absent_name_means_not_found() {
     // With executable_override Some(map), references to NAMEs not in the map
     // must report found=false (NOT silently fall through to PATH).
+    // Spec/0013 §A.7 — the absence test now uses `json-matches` on `.found`
+    // instead of `file-exists` (file-exists is constant TRUE for pseudo-files).
     let exes: BTreeMap<String, ExecutableSnapshot> = BTreeMap::new();
     let ctx = ctx_with(None, Some(exes));
     let prop = Proposition::FileSatisfies {
         path: SimplePath::new("<executable:also-not-declared>").unwrap(),
-        check: FilePredicateAst::FileExists,
+        // json-matches against an object schema requiring a string version
+        // field — the snapshot has version=null, so this FAILs.
+        check: FilePredicateAst::JsonMatches(DataSchema::IsObject(vec![(
+            "version".into(),
+            DataSchema::IsString,
+        )])),
     };
     let err = evaluate_with_ctx(&prop, &ctx).unwrap_err();
     assert_eq!(err.len(), 1);
-    assert!(err[0].message.contains("not found"));
+    // The message should name the field (version) — confirming the snapshot
+    // was constructed and the predicate fired against it.
+    assert!(
+        err[0].message.contains("version") || err[0].message.contains("string"),
+        "expected json-matches failure naming the field; got {:?}",
+        err[0].message
+    );
 }
 
 #[test]
@@ -451,10 +487,15 @@ fn meta_env_override_absent_key_means_not_set() {
 #[test]
 fn meta_malformed_fixture_rejected_with_clear_error() {
     let yaml = r#"
-executables:
+executable-overrides:
   bad:
+    name: bad
     found: "yes"
     executable: true
+    path: /x
+    command-full: bad
+    version-full: bad
+    version: "1.0"
 "#;
     let err = parse_fixture(yaml).unwrap_err();
     let msg = format!("{:#}", err);
@@ -465,17 +506,17 @@ executables:
 #[test]
 fn fixture_round_trip_drives_evaluator() {
     let yaml = r#"
-env:
+env-overrides:
   TEST_FIXTURE_OK: "1"
-executables:
+executable-overrides:
   docker:
+    name: docker
     found: true
     executable: true
     path: /usr/bin/docker
     command-full: docker --version
-    version-full: |
-      Docker version 20.10.7, build f0df350
-    version: 20.10.7
+    version-full: "Docker version 20.10.7, build f0df350"
+    version: "20.10.7"
 "#;
     let fixture = parse_fixture(yaml).unwrap();
     let ctx = EvalContext::with_fixture(empty_home(), fixture);

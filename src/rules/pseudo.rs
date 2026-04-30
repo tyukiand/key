@@ -79,6 +79,7 @@ impl EvalContext {
 #[derive(Debug, Clone)]
 pub struct PseudoSnapshot {
     pub body: String,
+    #[allow(dead_code)]
     pub kind: PseudoKind,
 }
 
@@ -89,6 +90,7 @@ pub enum PseudoKind {
         env_map: BTreeMap<String, String>,
     },
     Executable {
+        #[allow(dead_code)]
         snapshot: ExecutableSnapshot,
     },
 }

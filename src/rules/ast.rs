@@ -15,6 +15,10 @@ pub enum DataSchema {
     IsNumber,
     /// Value must be a boolean.
     IsBool,
+    /// Spec/0013 §A.7B — value must be the JSON boolean `true` (strict).
+    IsTrue,
+    /// Spec/0013 §A.7B — value must be the JSON boolean `false` (strict).
+    IsFalse,
     /// Value must be null.
     IsNull,
     /// Value must be an object with (at least) these keys satisfying sub-schemas.
@@ -509,6 +513,8 @@ pub fn all_data_schema_variants() -> Vec<DataSchema> {
         DataSchema::IsStringMatching("^test.*".into()),
         DataSchema::IsNumber,
         DataSchema::IsBool,
+        DataSchema::IsTrue,
+        DataSchema::IsFalse,
         DataSchema::IsNull,
         DataSchema::IsObject(vec![
             ("name".into(), DataSchema::IsString),
