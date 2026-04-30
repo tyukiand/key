@@ -115,4 +115,4 @@ Hard rules:
 19. Run cargo build --release and confirm clean. (done)
 20. Run ci.sh end-to-end LOCALLY (cargo clean → fmt →
     release build → tests) and confirm clean. (done)
-21. git add -A && git commit -m "key: Project ADT + Interaction coroutine + AsmOp test-only assembly + lower() functor + ADD/DELETE mutation surface; round-trip + coverage invariants".
+21. git add -A && git commit -m "key: Project ADT + Interaction coroutine + AsmOp test-only assembly + lower() functor + ADD/DELETE mutation surface; round-trip + coverage invariants". (done)
