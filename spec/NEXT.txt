@@ -101,4 +101,4 @@ Hard rules:
 17. Run cargo build --release and confirm clean. (done)
 18. Run ci.sh end-to-end LOCALLY (cargo clean → fmt →
     release build → tests) and confirm clean. (done)
-19. git add -A && git commit -m "key: OsEffects capability handle (Ro/Rw split, mock backend, single injection); project-only audit CLI (audit project edit fdisk-style menu); single-file add/delete/list/new removed".
+19. git add -A && git commit -m "key: OsEffects capability handle (Ro/Rw split, mock backend, single injection); project-only audit CLI (audit project edit fdisk-style menu); single-file add/delete/list/new removed". (done)
