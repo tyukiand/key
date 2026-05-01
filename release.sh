@@ -62,13 +62,15 @@ if [[ "$LOCAL" != "$REMOTE" ]]; then
 fi
 
 # 2. Read current version from the [package] section ONLY.
-#    awk: enter [package] block, print first version=, stop.
+#    awk: enter [package] block, parse first version= line via
+#    split-on-quote (greedy regex strip would delete the whole
+#    line in POSIX awk), stop.
 CURRENT="$(awk '
     /^\[package\]/ { in_pkg = 1; next }
     /^\[/          { in_pkg = 0 }
     in_pkg && /^version[[:space:]]*=/ {
-        gsub(/.*"|".*/, "")
-        print
+        n = split($0, a, "\"")
+        if (n >= 3) print a[2]
         exit
     }
 ' Cargo.toml)"
