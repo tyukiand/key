@@ -17,7 +17,7 @@ mod tests {
     fn run_self(bin: &PathBuf, args: AllowedSelfArgs) -> SafeExecResult {
         let exe = AllowedExecutablePath::new(bin)
             .expect("test binary path must be absolute and free of `..`");
-        let os = RealOsEffects;
+        let os = RealOsEffects::new();
         os.safe_exec(AllowedCommand::AuditSelf { binary: exe, args })
     }
 

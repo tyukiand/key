@@ -1,12 +1,9 @@
 //! YAML fixture loader for pseudo-file overrides
-//! (spec/0009 §2.5, §3.8, §3.8.1; spec/0013 §A.1, §A.6).
+//! (spec/0009 §3.8, §3.8.1; spec/0013 §A.1, §A.6; spec/0017 §A.2).
 //!
 //! Canonical fixture shape:
 //!
 //! ```yaml
-//! env-overrides:
-//!   <KEY>: <VALUE>
-//!   ...
 //! executable-overrides:
 //!   <NAME>:
 //!     name: <NAME>
@@ -18,10 +15,15 @@
 //!     version: string|null
 //! ```
 //!
-//! Backwards compatibility: the singular keys `env-override` and
-//! `executable-override` are still accepted (a deprecation warning is
-//! emitted once per load). Mixing the singular and plural forms of the
-//! same map in one file is a hard error.
+//! Backwards compatibility: the singular key `executable-override` is still
+//! accepted (a deprecation warning is emitted once per load). Mixing the
+//! singular and plural forms of the same map in one file is a hard error.
+//!
+//! Spec/0017 §A.2: the historic `env-overrides:` / `env-override:` fixture
+//! keys were removed when env loading moved onto `OsEffects::env_vars()`.
+//! Tests that need a hermetic env should construct a `MockOsEffects` and
+//! seed it with `set_env(...)`, then thread it via
+//! `EvalContext::with_fixture_and_os`.
 //!
 //! Each field is parsed individually; malformed fixtures fail with a
 //! line-numbered error.
@@ -46,12 +48,7 @@ pub const EXECUTABLE_ENTRY_KEYS: &[&str] = &[
     "version",
 ];
 
-const VALID_TOP_LEVEL_KEYS: &[&str] = &[
-    "env-overrides",
-    "env-override",
-    "executable-overrides",
-    "executable-override",
-];
+const VALID_TOP_LEVEL_KEYS: &[&str] = &["executable-overrides", "executable-override"];
 
 /// Parse a YAML fixture string into a `PseudoFileFixture`.
 /// Deprecation warnings (singular key forms) are emitted to stderr.
@@ -78,7 +75,6 @@ fn parse_fixture_value(value: &Value, source: &str) -> Result<(PseudoFileFixture
 
     let mut fixture = PseudoFileFixture::default();
     let mut warnings: Vec<String> = Vec::new();
-    let mut seen_env: Option<&'static str> = None;
     let mut seen_executable: Option<&'static str> = None;
     let mut singular_warning_emitted = false;
 
@@ -90,31 +86,14 @@ fn parse_fixture_value(value: &Value, source: &str) -> Result<(PseudoFileFixture
             )
         })?;
         match key {
-            "env-overrides" | "env-override" => {
-                let canonical = if key == "env-overrides" {
-                    "env-overrides"
-                } else {
-                    "env-override"
-                };
-                if let Some(prior) = seen_env {
-                    bail!(
-                        "fixture has both `{}` and `{}` (line {}); use only `env-overrides`.",
-                        prior,
-                        key,
-                        find_line(source, key).unwrap_or(0),
-                    );
-                }
-                seen_env = Some(canonical);
-                if key == "env-override" && !singular_warning_emitted {
-                    warnings.push(format!(
-                        "warning: fixture key `env-override` is deprecated; \
-                         rename to `env-overrides` (line {} of fixture).",
-                        find_line(source, "env-override").unwrap_or(0),
-                    ));
-                    singular_warning_emitted = true;
-                }
-                fixture.env_override = Some(parse_env_block(v)?);
-            }
+            "env-overrides" | "env-override" => bail!(
+                "fixture key `{}` is no longer supported (line {}). Spec/0017 §A.2 \
+                 removed env overrides from PseudoFileFixture; env loading now goes \
+                 through `OsEffects::env_vars()`. Tests that need a hermetic env \
+                 should construct a `MockOsEffects` and seed it via `set_env(...)`.",
+                key,
+                find_line(source, key).unwrap_or(0),
+            ),
             "executable-overrides" | "executable-override" => {
                 let canonical = if key == "executable-overrides" {
                     "executable-overrides"
@@ -339,23 +318,18 @@ mod tests {
     #[test]
     fn parse_canonical_plural_no_warning() {
         let yaml = format!(
-            "env-overrides:\n  PATH: /usr/bin\n  HOME: /home/u\n  RUSTUP_HOME: /home/u/.rustup\n\
-             executable-overrides:\n{}{}",
+            "executable-overrides:\n{}{}",
             full_executable_entry("docker"),
             full_executable_entry("git"),
         );
         let (fx, warns) = parse_fixture_collect_warnings(&yaml).unwrap();
         assert!(warns.is_empty(), "expected no warnings; got {:?}", warns);
-        assert_eq!(fx.env_override.as_ref().unwrap().len(), 3);
         assert_eq!(fx.executable_override.as_ref().unwrap().len(), 2);
     }
 
     #[test]
     fn parse_singular_emits_one_deprecation_warning() {
-        let yaml = format!(
-            "env-override:\n  FOO: bar\nexecutable-override:\n{}",
-            full_executable_entry("docker"),
-        );
+        let yaml = format!("executable-override:\n{}", full_executable_entry("docker"),);
         let (fx, warns) = parse_fixture_collect_warnings(&yaml).unwrap();
         // Spec/0013 §A.1 — emit ONLY ONCE per fixture load.
         assert_eq!(
@@ -365,29 +339,25 @@ mod tests {
             warns
         );
         assert!(
-            warns[0].contains("env-override") || warns[0].contains("executable-override"),
+            warns[0].contains("executable-override"),
             "warning should name the deprecated key; got {:?}",
             warns
         );
-        assert!(fx.env_override.is_some());
         assert!(fx.executable_override.is_some());
     }
 
     #[test]
-    fn parse_singular_only_env() {
-        let yaml = "env-override:\n  FOO: bar\n";
-        let (_, warns) = parse_fixture_collect_warnings(yaml).unwrap();
-        assert_eq!(warns.len(), 1);
-        assert!(warns[0].contains("env-override"));
-    }
-
-    #[test]
-    fn parse_mixed_singular_and_plural_is_error() {
-        let yaml = "env-override:\n  A: 1\nenv-overrides:\n  B: 2\n";
+    fn env_overrides_block_is_rejected() {
+        // Spec/0017 §A.2 — env loading goes through OsEffects; the fixture
+        // surface for env was removed.
+        let yaml = "env-overrides:\n  FOO: bar\n";
         let err = parse_fixture_collect_warnings(yaml).unwrap_err();
         let msg = format!("{:#}", err);
-        assert!(msg.contains("env-override"), "got {}", msg);
-        assert!(msg.contains("env-overrides"), "got {}", msg);
+        assert!(
+            msg.contains("env-overrides") && msg.contains("MockOsEffects"),
+            "expected migration message naming MockOsEffects; got {}",
+            msg
+        );
     }
 
     #[test]
@@ -405,10 +375,7 @@ mod tests {
 
     #[test]
     fn parse_full_fixture_via_legacy_api() {
-        let yaml = format!(
-            "env-overrides:\n  TEST_FIXTURE_OK: \"1\"\nexecutable-overrides:\n{}",
-            full_executable_entry("docker"),
-        );
+        let yaml = format!("executable-overrides:\n{}", full_executable_entry("docker"),);
         let fx = parse_fixture(&yaml).unwrap();
         let exes = fx.executable_override.unwrap();
         let d = exes.get("docker").unwrap();
@@ -463,7 +430,7 @@ mod tests {
 
     #[test]
     fn malformed_fixture_unknown_top_level_key() {
-        let yaml = "env-overrides:\n  FOO: bar\nbogus: 1\n";
+        let yaml = "executable-overrides: {}\nbogus: 1\n";
         let err = parse_fixture_collect_warnings(yaml).unwrap_err();
         let msg = format!("{:#}", err);
         assert!(msg.contains("bogus"), "got {}", msg);

@@ -9,3 +9,5 @@ pub mod project;
 pub mod rules;
 pub mod security;
 pub mod state;
+#[cfg(feature = "testing")]
+pub mod test_support;

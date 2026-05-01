@@ -9,6 +9,8 @@ mod project;
 mod rules;
 mod security;
 mod state;
+#[cfg(feature = "testing")]
+mod test_support;
 
 use anyhow::Result;
 use clap::Parser;
@@ -32,7 +34,7 @@ fn run() -> Result<()> {
     // is the capability handle threaded into Project::run_tests and the
     // future-proof migration path for everything that touches the OS.
     let fx = RealEffects;
-    let os = RealOsEffects;
+    let os = RealOsEffects::new();
 
     // Audit commands don't need SSH or key state
     if let Command::Audit { ref command } = cli.command {

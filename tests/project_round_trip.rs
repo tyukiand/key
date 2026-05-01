@@ -522,6 +522,11 @@ fn coverage_every_feature_round_trips_via_project() {
         "CliAuditTest",
         "CliAuditIgnoreFlag",
         "CliAuditWarnOnlyFlag",
+        // Spec/0017 — EnvRedaction is the umbrella Feature for the redaction
+        // kernel itself (claimed by RedactionCtx). It has no per-control
+        // YAML form; its detection-layer children (EnvRedactionByName /
+        // ByValueShape / ByEntropy) carry the per-control ExampleControls.
+        "EnvRedaction",
     ]
     .iter()
     .copied()

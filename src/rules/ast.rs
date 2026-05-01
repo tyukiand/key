@@ -219,6 +219,10 @@ pub enum FilePredicateAst {
     XmlMatchesPath(String),
     JsonMatches(DataSchema),
     YamlMatches(DataSchema),
+    /// Spec/0017 §B.8 — bare-string predicate. PASSes iff at least one line
+    /// of the subject's content (env value or file line) was redacted by the
+    /// OsEffects boundary filter ("looked secret enough to be redacted").
+    LooksLikePassword,
     All(Vec<FilePredicateAst>),
     Any {
         hint: String,
@@ -250,6 +254,7 @@ impl FilePredicateAst {
             FilePredicateAst::XmlMatchesPath(_) => "xml-matches",
             FilePredicateAst::JsonMatches(_) => "json-matches",
             FilePredicateAst::YamlMatches(_) => "yaml-matches",
+            FilePredicateAst::LooksLikePassword => "looks-like-password",
             FilePredicateAst::All(_) => "all",
             FilePredicateAst::Any { .. } => "any",
             FilePredicateAst::Not(_) => "not",
@@ -297,7 +302,10 @@ impl Proposition {
 }
 
 // ---------------------------------------------------------------------------
-// Pseudo-file snapshots (spec/0009 §3.2 ExecutableSnapshot, §2.5 env_override)
+// Pseudo-file snapshots (spec/0009 §3.2 ExecutableSnapshot, §3.8 executable
+// override). Env overrides are no longer a fixture concern — env loading
+// goes through `OsEffects::env_vars()` (spec/0017 §A) so tests seed env on
+// a `MockOsEffects` instance instead.
 // ---------------------------------------------------------------------------
 
 /// JSON snapshot of an introspected executable (spec/0009 §3.2).
@@ -329,16 +337,16 @@ impl ExecutableSnapshot {
     }
 }
 
-/// Test-fixture overrides for pseudo-file evaluation (spec/0009 §2.5, §3.8).
-///
-/// `env_override`: when `Some`, `<env>` materializes from this map exclusively
-/// (no `std::env::vars()` access). Override is total — keys absent are not set.
+/// Test-fixture overrides for pseudo-file evaluation (spec/0009 §3.8).
 ///
 /// `executable_override`: when `Some`, `<executable:NAME>` lookups bypass PATH
 /// and subprocess entirely. Override is total — NAMEs absent ⇒ `found=false`.
+///
+/// (The historic `env_override` field was removed by spec/0017 §A.2 — env
+/// is now read through `OsEffects::env_vars()`; tests seed env on a
+/// `MockOsEffects` instance instead.)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PseudoFileFixture {
-    pub env_override: Option<BTreeMap<String, String>>,
     pub executable_override: Option<BTreeMap<String, ExecutableSnapshot>>,
 }
 
@@ -444,6 +452,7 @@ pub const PREDICATE_YAML_KEYS: &[&str] = &[
     "xml-matches",
     "json-matches",
     "yaml-matches",
+    "looks-like-password",
     "all",
     "any",
     "not",
@@ -492,6 +501,7 @@ pub fn all_predicate_variants() -> Vec<FilePredicateAst> {
             "key".into(),
             DataSchema::IsString,
         )])),
+        FilePredicateAst::LooksLikePassword,
         FilePredicateAst::All(vec![FilePredicateAst::FileExists]),
         FilePredicateAst::Any {
             hint: "try this".into(),

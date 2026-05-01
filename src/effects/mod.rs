@@ -1,19 +1,22 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 #[cfg(feature = "testing")]
 use std::cell::RefCell;
 #[cfg(feature = "testing")]
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-pub mod os;
-
+// Re-export the OsEffects surface from the security kernel — spec/0017 §A.0
+// puts the contract + the production impl in `src/security/`. This module
+// hosts the higher-level `Effects` trait (println / dialoguer / ssh-keygen
+// porcelain) and its CannedEffects test backend.
+#[allow(unused_imports)] // Some symbols are only used by tests / library consumers.
+pub use crate::security::os_effects::{
+    self as os, DirEntryKind, MetadataInfo, OsEffects, OsEffectsRo, OsEffectsRw, RealOsEffects,
+    TempDirHandle,
+};
 #[cfg(feature = "testing")]
 #[allow(unused_imports)]
-pub use os::MockOsEffects;
-#[allow(unused_imports)]
-pub use os::{
-    DirEntryKind, MetadataInfo, OsEffects, OsEffectsRo, OsEffectsRw, RealOsEffects, TempDirHandle,
-};
+pub use crate::test_support::mock_os_effects::MockOsEffects;
 
 pub trait Effects {
     fn read_file(&self, path: &Path) -> Result<Vec<u8>>;
@@ -46,73 +49,72 @@ pub trait Effects {
 }
 
 // --- RealEffects ---
+//
+// Spec/0017 §A.0: every byte that crosses the OS boundary funnels through
+// `crate::security::os_effects::RealOsEffects`. RealEffects is the porcelain
+// (println / dialoguer / ssh-keygen wrapper) layered on top of that handle.
 pub struct RealEffects;
+
+impl RealEffects {
+    fn os(&self) -> RealOsEffects {
+        RealOsEffects::new()
+    }
+}
 
 impl Effects for RealEffects {
     fn read_file(&self, path: &Path) -> Result<Vec<u8>> {
-        std::fs::read(path).with_context(|| format!("Reading {}", path.display()))
+        self.os().read_file(path)
     }
 
     fn read_file_string(&self, path: &Path) -> Result<String> {
-        std::fs::read_to_string(path).with_context(|| format!("Reading {}", path.display()))
+        self.os().read_to_string(path)
     }
 
     fn write_file(&self, path: &Path, contents: &[u8]) -> Result<()> {
-        std::fs::write(path, contents).with_context(|| format!("Writing {}", path.display()))
+        self.os().write_file(path, contents)
     }
 
     fn path_exists(&self, path: &Path) -> bool {
-        path.exists()
+        self.os().path_exists(path)
     }
 
     fn is_dir(&self, path: &Path) -> bool {
-        path.is_dir()
+        self.os().metadata(path).map(|m| m.is_dir).unwrap_or(false)
     }
 
     fn is_file(&self, path: &Path) -> bool {
-        path.is_file()
+        self.os().metadata(path).map(|m| m.is_file).unwrap_or(false)
     }
 
     fn create_dir_all(&self, path: &Path) -> Result<()> {
-        std::fs::create_dir_all(path).with_context(|| format!("Creating dir {}", path.display()))
+        self.os().create_dir_all(path)
     }
 
     fn remove_dir_all(&self, path: &Path) -> Result<()> {
-        std::fs::remove_dir_all(path).with_context(|| format!("Removing {}", path.display()))
+        self.os().remove_dir_all(path)
     }
 
     fn read_dir_names(&self, path: &Path) -> Result<Vec<String>> {
-        let mut names = Vec::new();
-        let entries =
-            std::fs::read_dir(path).with_context(|| format!("Reading dir {}", path.display()))?;
-        for entry in entries {
-            let entry = entry?;
-            if let Some(name) = entry.file_name().to_str() {
-                names.push(name.to_string());
-            }
-        }
+        let mut names: Vec<String> = self
+            .os()
+            .read_dir(path)?
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
         names.sort();
         Ok(names)
     }
 
     fn read_dir_entries(&self, path: &Path) -> Result<Vec<os::DirEntryKind>> {
-        let os = RealOsEffects;
-        os.read_dir(path)
+        self.os().read_dir(path)
     }
 
     fn copy_file(&self, src: &Path, dst: &Path) -> Result<u64> {
-        std::fs::copy(src, dst)
-            .with_context(|| format!("copying {} -> {}", src.display(), dst.display()))
+        self.os().copy_file(src, dst)
     }
 
     fn set_permissions(&self, path: &Path, mode: u32) -> Result<()> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-                .with_context(|| format!("Setting permissions on {}", path.display()))?;
-        }
-        Ok(())
+        self.os().set_permissions(path, mode)
     }
 
     fn println(&self, msg: &str) {
@@ -179,11 +181,10 @@ impl Effects for RealEffects {
 
     fn check_ssh_prereqs(&self) -> Result<()> {
         use crate::security::exec::{AllowedCommand, AllowedExecutableName};
-        let os = RealOsEffects;
+        let os = self.os();
         for tool in &["ssh-keygen", "ssh-add"] {
             let exe = AllowedExecutableName::new(tool)
-                .map_err(|e| anyhow::anyhow!("{}", e))
-                .with_context(|| format!("Checking for {}", tool))?;
+                .map_err(|e| anyhow::anyhow!("Checking for {}: {}", tool, e))?;
             let result = os.safe_exec(AllowedCommand::Which { exe });
             if !result.success {
                 bail!(
@@ -199,7 +200,7 @@ impl Effects for RealEffects {
         use crate::security::exec::{
             AllowedCommand, AllowedComment, AllowedKeyPath, AllowedKeyType,
         };
-        let os = RealOsEffects;
+        let os = self.os();
         let key_path_brand = AllowedKeyPath::new(key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
         let comment_brand = AllowedComment::new(comment).map_err(|e| anyhow::anyhow!("{}", e))?;
         let key_type = AllowedKeyType::Ed25519;
@@ -218,7 +219,7 @@ impl Effects for RealEffects {
 
     fn ssh_keygen_fingerprint(&self, pub_path: &Path) -> Result<String> {
         use crate::security::exec::{AllowedCommand, AllowedKeyPath};
-        let os = RealOsEffects;
+        let os = self.os();
         let key_path = AllowedKeyPath::new(pub_path).map_err(|e| anyhow::anyhow!("{}", e))?;
         let result = os.safe_exec(AllowedCommand::SshKeygenFingerprint { key_path });
         if !result.success {
@@ -235,7 +236,7 @@ impl Effects for RealEffects {
 
     fn ssh_add(&self, key_path: &Path) -> Result<()> {
         use crate::security::exec::{AllowedCommand, AllowedKeyPath};
-        let os = RealOsEffects;
+        let os = self.os();
         let key_path_brand = AllowedKeyPath::new(key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
         let result = os.safe_exec(AllowedCommand::SshAddAdd {
             key_path: key_path_brand,
@@ -248,8 +249,7 @@ impl Effects for RealEffects {
 
     fn ssh_add_list(&self) -> Result<String> {
         use crate::security::exec::AllowedCommand;
-        let os = RealOsEffects;
-        let result = os.safe_exec(AllowedCommand::SshAddList);
+        let result = self.os().safe_exec(AllowedCommand::SshAddList);
         // ssh-add -l: exit 1 means "agent has no identities" — not an error.
         if result.exit == Some(1) {
             return Ok(String::new());
@@ -267,23 +267,25 @@ impl Effects for RealEffects {
     }
 
     fn home_dir(&self) -> Result<String> {
-        std::env::var("HOME").map_err(|_| {
+        let v = self.os().env_var("HOME").ok_or_else(|| {
             anyhow::anyhow!(
                 "$HOME is not set. Set the HOME environment variable to your home directory \
                  (e.g. export HOME=/home/youruser) and try again."
             )
-        })
+        })?;
+        Ok(v.to_string_lossy().into_owned())
     }
 
     fn shell_env(&self) -> Result<String> {
-        Ok(std::env::var("SHELL").unwrap_or_default())
+        Ok(self
+            .os()
+            .env_var("SHELL")
+            .map(|v| v.to_string_lossy().into_owned())
+            .unwrap_or_default())
     }
 
     fn current_exe_dir(&self) -> Result<PathBuf> {
-        let exe = std::env::current_exe().context("Failed to determine executable path")?;
-        exe.parent()
-            .context("Executable has no parent directory")
-            .map(|p| p.to_path_buf())
+        self.os().current_exe_dir()
     }
 }
 

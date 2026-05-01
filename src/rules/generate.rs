@@ -108,6 +108,9 @@ pub fn generate_predicate(pred: &FilePredicateAst) -> Value {
         FilePredicateAst::XmlMatchesPath(path) => mk("xml-matches", Value::String(path.clone())),
         FilePredicateAst::JsonMatches(schema) => mk("json-matches", generate_data_schema(schema)),
         FilePredicateAst::YamlMatches(schema) => mk("yaml-matches", generate_data_schema(schema)),
+        // Spec/0017 §B.8 — emitted as the bare string `looks-like-password`
+        // (round-trips through the bare-string branch of `parse_predicate`).
+        FilePredicateAst::LooksLikePassword => Value::String("looks-like-password".into()),
         FilePredicateAst::All(preds) => {
             let items: Vec<Value> = preds.iter().map(generate_predicate).collect();
             mk("all", Value::Sequence(items))

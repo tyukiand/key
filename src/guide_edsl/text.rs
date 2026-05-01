@@ -338,15 +338,15 @@ mod tests {
         let r = root();
         let filtered = filter_tree(&r, Feature::TestFixtureEnvOverride).expect("non-empty");
         let verbose = render(&filtered, Mode::Verbose);
-        // The descendant's fixture YAML survives.
+        // The descendant's fixture YAML survives — slug names the example.
         assert!(
-            verbose.contains("env-override"),
+            verbose.contains("env-via-mock-os-effects"),
             "missing fixture YAML: {}",
             verbose
         );
-        // Sibling test fixture override (executable) is excluded.
+        // Sibling fixture (the multi-entry executable override) is excluded.
         assert!(
-            !verbose.contains("executable-override"),
+            !verbose.contains("executable-overrides-multi"),
             "sibling content leaked into descendant filter: {}",
             verbose
         );
@@ -372,7 +372,7 @@ mod tests {
         );
         // Both root example and descendant fixture are rendered.
         assert!(verbose.contains("ENV-EX"));
-        assert!(verbose.contains("env-override"));
+        assert!(verbose.contains("env-via-mock-os-effects"));
     }
 
     /// Spec/0011 §B.4 + §B.5 — unknown id resolves to `None` via

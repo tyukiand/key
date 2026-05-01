@@ -1,0 +1,397 @@
+Two related changes to `<env>`:
+
+  A. Move env loading onto OsEffects (it was inadvertently left
+     calling `std::env::vars()` directly in the materialization
+     path even after spec/0016 routed every other OS touchpoint
+     through the trait).
+
+  B. Redact secret-shaped values everywhere. The invariant:
+     NO SENSITIVE INFORMATION LEAVES THE OsEffects SECURITY
+     KERNEL UNREDACTED. This applies to env (the original
+     ask) AND to every file/dir/process output the OsEffects
+     surfaces. Detection is a curated rule set
+     (variable-name heuristics + value-shape heuristics)
+     implemented with `regex`, which is already a dep. No
+     new heavy crate.
+
+Background
+----------
+spec/0016 introduced `OsEffects` and made `safe_exec` /
+filesystem ops route through it. The `<env>` materialization
+in src/rules/pseudo.rs still calls `std::env::vars()` directly
+for production. This means:
+  - the no-direct-fs lint test (which doesn't grep
+    `std::env::vars`) misses it;
+  - MockOsEffects's fake env doesn't actually feed into
+    pseudo-file rendering for production code paths — it only
+    works because of the existing `env_override` test seam;
+  - secrets in the real env (GH_TOKEN, AWS_*, RUSTUP_HOME ok
+    but anything ending in _TOKEN/_PASSWORD/_SECRET/_KEY) leak
+    verbatim into any `<env>`-using control's failure message
+    or rendered text. The user's reporter agent's complaint:
+    a rendered `<env>` line `export GITHUB_TOKEN=ghp_xxxx`
+    appearing in a FAIL message is exactly the kind of thing
+    that ends up in an editor's history, in a terminal scrollback,
+    in a transcript pasted into chat.
+
+A.0 The security kernel holds ONLY the sensitive stuff —
+    code that physically touches the OS (std::fs,
+    std::process, std::env, std::time) AND code that
+    enforces the redaction invariant. It must "fit on the
+    back of an envelope" — no test infrastructure, no
+    mock impls, no convenience wrappers diluting the
+    audit surface.
+
+    Inside src/security/:
+      - the OsEffects trait DEFINITION (the contract);
+      - RealOsEffects (the only production impl);
+      - the AllowedCommand enum + brand types (per
+        spec/0014);
+      - the redaction filter (per §B below) — one
+        function applied at the OsEffects boundary;
+      - the unredacted-matchers config type + its
+        loader.
+
+    Outside src/security/:
+      - MockOsEffects — test infrastructure only; lives
+        at tests/support/mock_os_effects.rs (or similar
+        cfg(test) location). It does NOT belong in the
+        kernel.
+      - everything else.
+
+    Lint allowlists (no-direct-fs / no-direct-exec /
+    no-direct-env): allow `src/security/*` AND
+    `src/main.rs` AND `tests/**`. Tests can mock at the
+    test layer; nothing else may touch raw OS.
+
+A. env loading via OsEffects
+
+A.1 New method on OsEffects (read-only):
+
+      fn env_vars(&self) -> Vec<(String, String)>;
+
+    Production (RealOsEffects): wraps `std::env::vars()`,
+    sorts ASCII-by-name (the existing sort happens here, not
+    downstream).
+    Mock (MockOsEffects): returns the seeded fake env.
+
+A.2 The existing `env_override: Option<BTreeMap<...>>` test
+    seam in pseudo.rs is REMOVED. With OsEffects in place,
+    overriding env in tests is "use a MockOsEffects with a
+    seeded env" — one mechanism, not two.
+    Migrate every test that used env_override to the
+    MockOsEffects path.
+
+A.3 Add a no-direct-env lint test analogous to no-direct-fs
+    and no-direct-exec: greps src/**/*.rs for `std::env::vars`
+    and `std::env::var`; allowlists src/effects/* and
+    src/main.rs only. (`env!` and `option_env!` macros are
+    fine — those are compile-time, not runtime.)
+
+A.4 Migrate any remaining direct std::env reads in src/ to
+    OsEffects. Run the new lint test to confirm.
+
+B. Secret redaction in <env>
+
+B.1 Detection is layered and conservative — false negatives
+    cost MORE than false positives in this context. Apply
+    every layer; if ANY says "redact", the value is
+    LENGTH-PRESERVED-OVERWRITTEN with the literal pattern
+    `REDACTED` looped to the original length. So:
+
+      original length 36 → "REDACTEDREDACTEDREDACTEDREDACTEDREDA"
+      original length  4 → "REDA"
+      original length  0 → ""  (no-op)
+
+    The exact pattern is the literal `REDACTED42` looped
+    (digits 4 and 2 reduce collision probability with
+    naturally-occurring `REDACTED` substrings in legitimate
+    documentation/comments). Both characters live in the
+    base64 + base64url alphabets.
+
+    Constraints satisfied:
+      - stays within the base64 + base64url alphabet (only
+        uppercase ASCII letters and digits), so downstream
+        parsers / regex-shaped predicates do not choke on
+        the redacted value;
+      - same length as the original, so length-based
+        signals (e.g. "this looks like a 40-char hex
+        because the entropy heuristic noticed length=40")
+        do not flip after redaction.
+
+    The `reason` for redaction (which rule triggered) is
+    NOT carried in the value itself — that would break the
+    length and alphabet constraints above. Instead it goes
+    out-of-band:
+      - debug-level log line per redaction at materialize
+        time, naming the variable + rule;
+      - the `looks-like-password` predicate (§B.8) lets controls
+        assert that redaction did happen, which covers the
+        "I want to verify my secrets are being detected"
+        meta-use-case.
+
+    Authors who want to surface the reason in human-
+    readable output should use `looks-like-password` against the
+    same variable in a control whose remediation string
+    explains the policy.
+
+B.2 Layer 1 — name-based rules. A variable's NAME alone is
+    enough to redact its value. Default rule set
+    (case-insensitive substring match on the name):
+
+      token, password, passwd, secret, apikey, api_key,
+      private_key, privatekey, pgp, gpg, ssh_key,
+      auth, credential, session, cookie, oauth, bearer,
+      access_key, refresh_key, signing_key, encryption_key
+
+    Whitelist (NEVER redacted by name even if matching):
+      path, http_proxy, https_proxy, no_proxy
+        (these may have substring "auth" or similar but are
+         strictly non-secret config)
+
+    Apply to the variable name (uppercase or lowercase
+    irrelevant). On match: redact the value.
+
+B.3 Layer 2 — value-shape rules. A value MAY be a known
+    token shape regardless of variable name. Default rule
+    set (regex against the value):
+
+      ^ghp_[A-Za-z0-9]{36,}$              GitHub PAT
+      ^github_pat_[A-Za-z0-9_]{82,}$      GitHub fine-grained PAT
+      ^gho_[A-Za-z0-9]{36,}$              GitHub OAuth
+      ^xox[baprs]-[A-Za-z0-9-]{10,}$      Slack token
+      ^AKIA[0-9A-Z]{16}$                  AWS access key id
+      ^ASIA[0-9A-Z]{16}$                  AWS temp access key
+      ^eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$
+                                          JWT
+      ^-----BEGIN .* PRIVATE KEY-----     PEM-encoded private key
+      ^[A-Fa-f0-9]{40,}$                  generic hex (40+ chars,
+                                          length cap to limit FP)
+
+    Apply each pattern; first match wins. On match: redact
+    the value, reason = the rule's short name.
+
+B.4 Layer 3 — high-entropy heuristic. ON BY DEFAULT (more
+    aggressive than the prior draft). A value is redacted iff:
+      - length ≥ 20,
+      - contains at least one digit AND at least one letter,
+      - Shannon-entropy estimate ≥ 4.5 bits/char (computed
+        over the value's character distribution),
+      - is NOT a plausible filesystem path (no `/`, `~`,
+        `\\`).
+    On match: redact, reason = `high-entropy`.
+    Default-ON is intentional: false positives (git SHAs,
+    container IDs) are explicitly opt-out via the
+    `unredacted:` allowlist (§B.9). Defaulting to safe is
+    cheap; defaulting to leaking is permanent.
+
+B.5 Implementation: a single function
+
+      fn redact_value(value: &str,
+                      ctx: &RedactionCtx) -> RedactedValue;
+
+    in src/security/redact.rs (lives in the kernel —
+    enforces the invariant). Pure; no I/O.
+    `RedactionCtx` carries the unredacted-allowlist
+    (§B.9) plus an optional `name_hint: Option<&str>` so
+    Layer 1 (name-based) can fire when redacting an env
+    value vs a free-floating file-content snippet.
+
+    The same function is called from EVERY OsEffects read
+    path: env_vars (with name_hint set), read_file (with
+    name_hint = None — content is line-based), read_dir
+    (file names are not subject to redaction; their
+    contents would be on a subsequent read_file). The
+    invariant is enforced at the OsEffects layer, not at
+    each consumer.
+
+B.6 Crate choice: `regex` (already a dep). NO new heavy
+    crate. The redaction module fits "on the back of an
+    envelope" per the security-kernel philosophy.
+
+B.7 Wiring: every byte that crosses the OsEffects boundary
+    is redaction-filtered before it returns to the caller.
+
+      env_vars()  → each value redacted with name_hint
+      read_file() → file content redacted line-by-line
+                    (no name_hint; pure content matching)
+      read_to_string() → same as read_file()
+
+    Redacted env line:
+      export GITHUB_TOKEN=REDACTED42REDACTED42REDACTED42REDA
+    Redacted file line:
+      api_key = REDACTED42REDACTED42REDACTED42REDA
+
+    Same length as original, alphabet ⊂ base64. The
+    redaction reason is in the debug log and queryable
+    via the `looks-like-password` predicate (§B.8).
+
+B.8 Predicate semantics on redacted values:
+      - `shell-exports-variable: GITHUB_TOKEN` still PASSes
+        (the variable IS exported; redaction doesn't change
+        export-presence);
+      - `value-matches: <regex>` from spec/0010 evaluates
+        against the REDACTED text. Asserting on a secret's
+        original shape is conceptually wrong — the regex
+        would itself be a partial leak.
+      - New bare-string predicate `looks-like-password`
+        PASSes iff the value (env value, or any line of
+        file content, depending on the predicate's
+        subject) matched at least one redaction rule.
+        Useful for meta-controls: "every variable named
+        *_TOKEN must look like a password" — sanity check
+        that detection is firing.
+
+      (NOTE: name `looks-like-password` chosen over
+       `looks-like-password` because the user-facing semantics is
+       "this looked secret enough to be redacted",
+       which generalizes across env / file content /
+       any future subject. Internally it asks the same
+       question the redactor asked.)
+
+B.9 The `unredacted:` allowlist — the SOLE configuration
+    surface for opting out of redaction. Lives at the
+    project main.yaml level (§C below):
+
+      unredacted:
+        - value: xyz24534dftvg            # exact-match opt-out
+        - value: zcfvghbhuygg
+        - prefix: img_id_                 # any value starting
+                                          # with this is safe
+        - prefix: sha256:                 # any sha256:… value
+
+    Each entry is one of:
+      `value: <literal>`   — exact byte-for-byte match
+      `prefix: <literal>`  — value starts with this prefix
+
+    No regex matchers in the allowlist (deliberately).
+    Regex would invite mistakes in the most safety-critical
+    surface; literal-only is auditable at a glance.
+
+    Loading: the unredacted-list is parsed from main.yaml
+    AT CONFIG TIME and passed to OsEffects::new() (so
+    every effects-instance carries its allowlist; no
+    runtime mutation). The list applies to env values,
+    file content lines, and any other content the
+    OsEffects surfaces.
+
+    A value is redacted IFF (the detection layers fire AND
+    the value is not in the allowlist). The allowlist is
+    a strict suppressor on top of detection.
+
+B.10 Guide additions: new section under the <env>
+     pseudo-file (TERSE pass — security feature; must be
+     visible by default). Show:
+       - the redaction invariant (no sensitive value
+         leaves OsEffects unredacted);
+       - one worked example of a redacted body;
+       - the `unredacted:` allowlist syntax;
+       - the `looks-like-password` predicate.
+
+C. Project main extension
+
+C.1 The project main.yaml gains a top-level
+    `unredacted:` block alongside the existing
+    `controls:` block. Schema per §B.9. Loaded into the
+    Project ADT (spec/0015 §1.1) as a new field
+    `unredacted: Vec<UnredactedMatcher>` where
+    UnredactedMatcher is `enum { Value(String),
+    Prefix(String) }` with a sanitizing constructor (no
+    empty literals; no whitespace-only).
+
+C.2 Project mutation surface (per spec/0015 §4.1):
+      AsmOp::AddUnredactedMatcher(UnredactedMatcher)
+      AsmOp::DeleteUnredactedMatcher(UnredactedMatcher)
+    Both are first-class top-level ops with their own
+    sub-dialogs in `key audit project edit`. Menu
+    commands (per spec/0016 §B.3):
+      add-unredacted-matcher
+      delete-unredacted-matcher
+
+C.3 Round-trip extension (spec/0015 §5.1): the round-
+    trip property holds for Projects with unredacted
+    blocks. Add a torture case under
+    tests/fixtures/project_torture/ exercising
+    add-then-delete on the same matcher.
+
+C.4 Coverage extension (spec/0015 §5.2): the new
+    AddUnredactedMatcher / DeleteUnredactedMatcher
+    AsmOps must be exercised by at least one in-memory
+    Project that passes the round-trip. New Features
+    `MutationAddUnredactedMatcher`,
+    `MutationDeleteUnredactedMatcher` (parents:
+    existing Mutation* roots if any, otherwise root).
+
+C.5 OsEffects::new (or the appropriate constructor)
+    takes the allowlist from the loaded Project and
+    threads it through. RealOsEffects holds it
+    immutably; MockOsEffects accepts the same shape so
+    tests can prove the allowlist suppresses
+    redaction.
+
+D. Tests
+
+D.1 redact_value unit tests:
+      - every Layer 1 name pattern triggers (one var per
+        pattern);
+      - whitelist (PATH, *_PROXY) NOT redacted by name;
+      - every Layer 2 value-shape pattern triggers (one
+        example per);
+      - Layer 3 high-entropy DEFAULT-ON: random hex SHA-
+        long enough redacts; declared-unredacted SHA does
+        not.
+      - the unredacted allowlist suppresses every layer:
+        a value listed as `value:` is verbatim; a value
+        with a registered `prefix:` is verbatim.
+
+D.2 OsEffects integration:
+      - MockOsEffects seeded with
+          GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          PATH=/usr/bin
+          NORMAL_VAR=hello
+        and an empty unredacted-list:
+          env_vars() returns GITHUB_TOKEN redacted,
+          NORMAL_VAR verbatim, PATH verbatim;
+      - same fixture with `unredacted: [{ value: ghp_xxx... }]`:
+        GITHUB_TOKEN comes back verbatim;
+      - read_file() over a fixture file containing a
+        `password = ghp_xxx...` line: returns the line
+        with the token redacted, length-preserved,
+        base64-alphabet only;
+      - the redacted line satisfies `looks-like-password`;
+        an unredacted line does not.
+
+D.3 No-direct-env lint test (§A.3) passes after migration.
+
+D.4 `looks-like-password` predicate tests across env and
+    file content; PASS on redacted, FAIL on unredacted.
+
+D.5 Round-trip (spec/0015 §5.1) on Projects with
+    AddUnredactedMatcher / DeleteUnredactedMatcher.
+
+E. Out of scope
+
+- On-disk encrypted-credential scanning (e.g. inspecting
+  ~/.gnupg/private-keys-*.bin). The redaction is
+  byte-content-level; deeper "is this value an encrypted
+  RSA blob" detection is left to a later iteration.
+- Custom redaction strategies (hash-replace, first/last
+  4 chars). Length-preserving REDACTED42-loop only.
+- Detection of secrets EMBEDDED inside a non-secret
+  value (`RUSTUP_HOME=/home/u/.rustup/aws_secret_AKIA…/`).
+  Per-component detection only.
+- Performance benchmarks / SIMD-accelerated matching.
+  Rule set is small; per-line regex overhead is invisible.
+- Regex matchers in the unredacted allowlist (deliberate
+  — literal-only is auditable at a glance).
+
+F. Verification
+
+- ./test.sh PASS — including unit tests (§D.1), OsEffects
+  integration (§D.2), the no-direct-env lint (§D.3),
+  looks-like-password predicate tests (§D.4), and the
+  round-trip extension (§D.5).
+- A live `key audit run` against the host with at least one
+  *_TOKEN var set produces NO unredacted token in any output.
+- ci.sh runs clean LOCALLY before pushing.
+- Commit; release tag is the receptionist's call.

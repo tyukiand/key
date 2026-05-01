@@ -770,11 +770,18 @@ pub fn project_run(project_dir: &Path, home_dir: &Path, fx: &dyn Effects) -> Res
     // PASS/FAIL prints, same exit semantics.
     let _ = find_main_yaml(project_dir, fx)?;
     let project = crate::project::Project::load_from_dir(project_dir, fx)?;
+    // Spec/0017 §C.5 — thread the project's unredacted-allowlist into
+    // RealOsEffects so every env / file read in the audit run is filtered
+    // against the right context.
+    let unredacted = project.unredacted.clone();
     let mut has_failure = false;
     let mut total_pass = 0usize;
     let mut total_fail = 0usize;
     for control in project.all_controls() {
-        match crate::rules::evaluate::evaluate(&control.check, home_dir) {
+        let os: Box<dyn crate::effects::OsEffectsRo> = Box::new(
+            crate::effects::RealOsEffects::with_unredacted(unredacted.clone()),
+        );
+        match crate::rules::evaluate::evaluate_with_os(&control.check, home_dir, os) {
             Ok(()) => {
                 total_pass += 1;
                 fx.println(&format!(

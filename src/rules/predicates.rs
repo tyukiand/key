@@ -109,6 +109,7 @@ pub fn desugar(pred: &FilePredicateAst) -> Option<FilePredicateAst> {
         }
         FilePredicateAst::ShellExportsValueMatches { .. } => None,
         FilePredicateAst::ShellDefinesVariableValueMatches { .. } => None,
+        FilePredicateAst::LooksLikePassword => None,
         FilePredicateAst::FileExists => None,
         FilePredicateAst::TextMatchesRegex(_) => None,
         FilePredicateAst::TextContains(_) => None,
@@ -154,7 +155,7 @@ pub fn evaluate_predicate_subject(
             Subject::Pseudo(_, _) => {
                 // Spec/0013 §A.7 — `file-exists` on every pseudo-file is constant
                 // TRUE. The pseudo-file's virtual content is always materialized
-                // (env reads `std::env::vars()`; executable builds a snapshot
+                // (env reads via `OsEffects::env_vars`; executable builds a snapshot
                 // whose `.found` field reflects PATH lookup but the snapshot
                 // itself always exists). To test whether a program is on PATH,
                 // use `json-matches: { path: $.found, equals: true }` or
@@ -310,14 +311,70 @@ pub fn evaluate_predicate_subject(
         FilePredicateAst::ShellDefinesVariableValueMatches { name, value_regex } => {
             evaluate_shell_value_matches(subject, name, value_regex, false)
         }
+        // Spec/0017 §B.8 — bare-string predicate. PASSes iff at least one
+        // value (env value, or any line of file content) "looked secret
+        // enough to be redacted" at the OsEffects boundary. Two angles:
+        //   (a) re-run the detection against the value with the NAME as
+        //       `name_hint` (catches Layer-1 in env, where the var-name
+        //       carries the signal even after the value was rewritten);
+        //   (b) detect the REDACTED42 pattern itself (catches values that
+        //       were already redacted at the boundary so Layers 2-3 no
+        //       longer fire on them — the cooperation is by design).
+        FilePredicateAst::LooksLikePassword => {
+            use crate::rules::ast::PseudoFile;
+            use crate::security::redact::{looks_like_password, RedactionCtx};
+            let ctx = RedactionCtx::empty();
+            match subject {
+                Subject::Pseudo(PseudoFile::Env, snap) => {
+                    for line in snap.body.lines() {
+                        if let Some(rest) = line.strip_prefix("export ") {
+                            if let Some(eq) = rest.find('=') {
+                                let name = &rest[..eq];
+                                let value = &rest[eq + 1..];
+                                if looks_like_password(value, &ctx, Some(name))
+                                    || contains_redaction_marker(value)
+                                {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                    Err(format!(
+                        "no env value looks like a password in {}",
+                        subject.path_for_display()
+                    ))
+                }
+                _ => {
+                    let content = read_subject_text(subject)?;
+                    for line in content.lines() {
+                        if looks_like_password(line, &ctx, None) || contains_redaction_marker(line)
+                        {
+                            return Ok(());
+                        }
+                    }
+                    Err(format!(
+                        "no line looks like a password in {}",
+                        subject.path_for_display()
+                    ))
+                }
+            }
+        }
     }
+}
+
+/// True iff the slice contains the length-preserving REDACTED42-loop pattern
+/// emitted by the OsEffects redactor (spec/0017 §B.1). Looks for the literal
+/// `REDACTED42` repeated at least twice OR `REDACTED42` followed by a partial
+/// continuation (e.g. `REDACTED42REDACT`) to allow short redacted values.
+fn contains_redaction_marker(s: &str) -> bool {
+    s.contains("REDACTED42")
 }
 
 fn read_subject_text(subject: &Subject<'_>) -> Result<String, String> {
     use crate::effects::{OsEffectsRo, RealOsEffects};
     match subject {
         Subject::Concrete(p) => {
-            let os = RealOsEffects;
+            let os = RealOsEffects::new();
             if !os.path_exists(p) {
                 return Err(format!("file does not exist: {}", p.display()));
             }

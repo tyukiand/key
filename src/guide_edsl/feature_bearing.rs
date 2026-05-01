@@ -6,9 +6,11 @@
 //! has no duplicates AND equals `Feature::all_set()`.
 
 use super::features::Feature;
+use crate::project::ProjectMutation;
 use crate::rules::ast::{
     Control, ControlFile, DataSchema, FilePredicateAst, Proposition, PseudoFile, PseudoFileFixture,
 };
+use crate::security::redact::RedactionCtx;
 
 /// Implement on every AST variant that participates in feature coverage.
 pub trait FeatureBearing {
@@ -60,6 +62,7 @@ impl FeatureBearing for FilePredicateAst {
             FilePredicateAst::XmlMatchesPath(_) => &[Feature::PredicateXmlMatches],
             FilePredicateAst::JsonMatches(_) => &[Feature::PredicateJsonMatches],
             FilePredicateAst::YamlMatches(_) => &[Feature::PredicateYamlMatches],
+            FilePredicateAst::LooksLikePassword => &[Feature::PredicateLooksLikePassword],
             FilePredicateAst::All(_) => &[Feature::PredicateAnd],
             FilePredicateAst::Any { .. } => &[Feature::PredicateOr],
             FilePredicateAst::Not(_) => &[Feature::PredicateNot],
@@ -134,6 +137,44 @@ impl FeatureBearing for PseudoFileFixture {
             Feature::TestFixtureExecutableOverride,
             Feature::TestFixtureMalformedRejection,
         ]
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Spec/0017 — env redaction kernel (4 features) and project-mutation surface
+// for the unredacted-allowlist (2 features).
+//
+// `RedactionCtx` is the configuration handle that the OsEffects boundary
+// holds. By construction it ALWAYS represents all three detection layers
+// plus the umbrella, so it bundles the four EnvRedaction* features.
+// `ProjectMutation` is the existing mutation-op alphabet; the two
+// unredacted-allowlist arms claim the matching Mutation* features.
+// -----------------------------------------------------------------------------
+
+impl FeatureBearing for RedactionCtx {
+    fn features(&self) -> &'static [Feature] {
+        &[
+            Feature::EnvRedaction,
+            Feature::EnvRedactionByName,
+            Feature::EnvRedactionByValueShape,
+            Feature::EnvRedactionByEntropy,
+        ]
+    }
+}
+
+impl FeatureBearing for ProjectMutation {
+    fn features(&self) -> &'static [Feature] {
+        match self {
+            ProjectMutation::AddUnredactedMatcher { .. } => {
+                &[Feature::MutationAddUnredactedMatcher]
+            }
+            ProjectMutation::DeleteUnredactedMatcher { .. } => {
+                &[Feature::MutationDeleteUnredactedMatcher]
+            }
+            // Other mutation arms predate spec/0017 and are not part of the
+            // documented Feature surface; they return an empty slice.
+            _ => &[],
+        }
     }
 }
 
@@ -239,9 +280,8 @@ mod tests {
         };
         multiset.extend_from_slice(cf.features());
         multiset.extend_from_slice(one_control().features());
-        // Test fixture (claims all four TestFixture features)
+        // Test fixture (claims TestFixture features)
         let fixture = PseudoFileFixture {
-            env_override: None,
             executable_override: Some(
                 std::collections::BTreeMap::<String, ExecutableSnapshot>::new(),
             ),
@@ -250,6 +290,21 @@ mod tests {
         // CLI surface
         for c in all_cli_command_variants() {
             multiset.extend_from_slice(c.features());
+        }
+        // Spec/0017 — redaction kernel (1 representative ctx claims all 4
+        // EnvRedaction* features) + project-mutation arms for the
+        // unredacted-allowlist.
+        let ctx = RedactionCtx::empty();
+        multiset.extend_from_slice(ctx.features());
+        for op in &[
+            ProjectMutation::AddUnredactedMatcher {
+                matcher: crate::security::unredacted::UnredactedMatcher::value("x").unwrap(),
+            },
+            ProjectMutation::DeleteUnredactedMatcher {
+                matcher: crate::security::unredacted::UnredactedMatcher::value("x").unwrap(),
+            },
+        ] {
+            multiset.extend_from_slice(op.features());
         }
 
         // Uniqueness: no feature claimed twice.

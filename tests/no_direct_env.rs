@@ -1,11 +1,14 @@
-//! Lint test (spec/0016 §A.6, tightened by spec/0017 §A.0): no direct
-//! filesystem invocation outside the security kernel.
+//! Lint test (spec/0017 §A.3): no direct env reads outside the security
+//! kernel.
 //!
-//! Walks `src/**/*.rs`, greps for `std::fs::`, `tokio::fs::`, `fs::File::`,
-//! and asserts ZERO matches outside `src/security/*` and `src/main.rs`. The
-//! only place these tokens are allowed is inside `src/security/` (the
-//! production `RealOsEffects` impl) and `src/main.rs` (one-time entry-point
-//! bootstrap). All other code must thread an OsEffects handle.
+//! Walks `src/**/*.rs`, greps for `std::env::vars` and `std::env::var`,
+//! and asserts ZERO matches outside `src/security/*` and `src/main.rs`.
+//! All other code must call `OsEffects::env_vars()` / `OsEffects::env_var()`
+//! so the redaction filter (spec/0017 §B.7) can run before the value
+//! leaves the kernel.
+//!
+//! The macros `env!` and `option_env!` are compile-time, not runtime, and
+//! are never matched by these patterns; they remain freely usable.
 
 use std::path::{Path, PathBuf};
 
@@ -31,8 +34,8 @@ fn collect_rs_files(root: &Path, out: &mut Vec<PathBuf>) {
 fn is_allowlisted(rel: &Path) -> bool {
     let s = rel.to_string_lossy().replace('\\', "/");
     // Spec/0017 §A.0: the security kernel is the SOLE production-code home
-    // for raw fs/exec/env reads. `src/main.rs` is allowed for one-time
-    // entry-point bootstrap.
+    // for raw env reads. `src/main.rs` is allowed for one-time entry-point
+    // bootstrap.
     s.starts_with("src/security/") || s == "src/main.rs"
 }
 
@@ -52,8 +55,6 @@ fn cfg_test_line_ranges(body: &str) -> Vec<(usize, usize)> {
             || l.starts_with("#[cfg_attr(") && (l.contains("test") || l.contains("\"testing\""))
             || l.contains("#[cfg(any(test, feature = \"testing\"))]");
         if triggers {
-            // Find the next opening `{` (end of fn signature / mod header) and
-            // track brace depth until it returns to zero.
             let mut j = i;
             let mut found_open = false;
             let mut depth: i32 = 0;
@@ -87,14 +88,14 @@ fn line_in_ranges(line_idx: usize, ranges: &[(usize, usize)]) -> bool {
 }
 
 #[test]
-fn no_direct_fs_outside_effects_module() {
+fn no_direct_env_outside_security_kernel() {
     let root = manifest_dir().join("src");
     let mut files = Vec::new();
     collect_rs_files(&root, &mut files);
 
-    // Patterns that indicate a direct filesystem call. Textual tripwire,
-    // mirroring tests/no_direct_exec.rs from spec/0014.
-    let needles: &[&str] = &["std::fs::", "tokio::fs::", "fs::File::"];
+    // Patterns that indicate a direct env read at runtime. `env!` /
+    // `option_env!` are compile-time and never match these tokens.
+    let needles: &[&str] = &["std::env::vars", "std::env::var"];
 
     let manifest = manifest_dir();
     let mut violations: Vec<String> = Vec::new();
@@ -110,17 +111,14 @@ fn no_direct_fs_outside_effects_module() {
         };
         let test_ranges = cfg_test_line_ranges(&body);
         for (lineno, line) in body.lines().enumerate() {
-            // Skip in-source unit-test modules + #[test] fns. The OsEffects
-            // discipline targets production paths; tests routinely need
-            // ad-hoc real-fs scaffolding.
             if line_in_ranges(lineno, &test_ranges) {
                 continue;
             }
             for needle in needles {
                 if line.contains(needle) {
                     violations.push(format!(
-                        "{}:{}: direct-fs token `{}` — must go through \
-                         key::security::os_effects::OsEffects",
+                        "{}:{}: direct-env token `{}` — must go through \
+                         key::security::os_effects::OsEffects::env_vars / env_var",
                         rel.display(),
                         lineno + 1,
                         needle
@@ -133,7 +131,7 @@ fn no_direct_fs_outside_effects_module() {
 
     assert!(
         violations.is_empty(),
-        "Found {} direct-fs violation(s):\n{}",
+        "Found {} direct-env violation(s):\n{}",
         violations.len(),
         violations.join("\n")
     );

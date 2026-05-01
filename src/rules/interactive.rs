@@ -489,6 +489,7 @@ pub fn build_predicate(answerer: &mut impl Answerer) -> Result<BuildResult<FileP
                 BuildResult::Built(schema) => FilePredicateAst::YamlMatches(schema),
                 BuildResult::GoBack => continue,
             },
+            "looks-like-password" => FilePredicateAst::LooksLikePassword,
             "all" => {
                 let preds = collect_items(
                     answerer,
@@ -717,6 +718,7 @@ fn predicate_menu_items() -> Vec<&'static str> {
         "xml-matches (element path)",
         "json-matches (data schema)",
         "yaml-matches (data schema)",
+        "looks-like-password (any value or line was redacted)",
         "all (multiple checks)",
         "any (alternatives with hint)",
         "not (negate)",
@@ -948,6 +950,9 @@ fn predicate_to_answers_inner(pred: &FilePredicateAst, answers: &mut Vec<String>
                 "shell-exports/defines value-matches mapping form is not exposed via the \
                  interactive picker; only the bare-string form is reachable from `audit add`."
             );
+        }
+        FilePredicateAst::LooksLikePassword => {
+            answers.push(mi("looks-like-password"));
         }
     }
 }
@@ -1217,6 +1222,7 @@ fn compile_predicate_inner(pred: &FilePredicateAst, ops: &mut Vec<AsmOp>) {
                  interactive picker; only the bare-string form is reachable from `audit add`."
             );
         }
+        FilePredicateAst::LooksLikePassword => ops.push(select("looks-like-password")),
     }
 }
 

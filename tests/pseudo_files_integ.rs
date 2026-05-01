@@ -180,7 +180,6 @@ fn meta_override_total_when_path_is_empty() {
     let ctx = EvalContext::with_fixture(
         empty_home(),
         PseudoFileFixture {
-            env_override: None,
             executable_override: Some(exes),
         },
     );

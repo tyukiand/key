@@ -127,7 +127,7 @@ pub fn emit_project(
         .with_context(|| format!("creating {}", empty_fixture_dir.display()))?;
     fx.write_file(
         &empty_fixture_dir.join("pseudo-file-overrides.yaml"),
-        b"env-overrides: {}\nexecutable-overrides: {}\n",
+        b"executable-overrides: {}\n",
     )?;
 
     // 4. One fixture dir per ExampleFixture node, named by its `name`.

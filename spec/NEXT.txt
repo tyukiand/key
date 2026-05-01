@@ -1,104 +1,167 @@
-Iteration: implement spec/0016-os-effects-and-project-only.txt
-— introduce OsEffects capability handle (Ro/Rw split, mock
-backend, single injection at main), and make Project the
-only unit `key audit` operates on (remove single-file
-add/delete/list/new; replace with `key audit project edit`
-fdisk-style menu).
+Iteration: implement spec/0017-env-redaction-and-os-effects.txt
+— move env loading onto OsEffects, apply redaction at the
+OsEffects boundary uniformly (env + file content), with the
+inversion-of-control unredacted-allowlist surface at the
+project main level.
 
-Authoritative spec: spec/0016-os-effects-and-project-only.txt
-(four sections A–D). Background: spec/0014 (safe_exec stays;
-moves to OsEffects method), spec/0015 (Project ADT,
-Interaction coroutine, AsmOp — all the foundations are
-already in place).
+Authoritative spec: spec/0017-env-redaction-and-os-effects.txt
+(six sections A–F). Background: spec/0016 (OsEffects), spec/0015
+(Project ADT + Interaction + AsmOps), spec/0014 (security
+kernel pattern), spec/0010 §A.7B (value-matches), spec/0011
+(EDSL features + parent forest).
 
 Hard rules:
   - Append " (done)" to each numbered item below as it
-    finishes, or " (skipped: <reason>)" if obsolete. Do not
-    delete prior markers. NO skipping CLI-removal items
-    (spec §B.1) — they are the point of this iteration.
+    finishes, or " (skipped: <reason>)" if obsolete.
   - Build with cargo; ./test.sh runs the suite.
-  - All Command::new still routes through OsEffects (which
-    delegates to safe_exec); src/security/exec.rs's
-    invariant from spec/0014 is preserved.
+  - Use `regex` (already a dep). NO new heavy crate.
   - Run ci.sh end-to-end LOCALLY before pushing.
+  - Length-preserving REDACTED42-loop is the ONLY redaction
+    strategy; do not invent alternatives.
+  - Security kernel must "fit on the back of an envelope" —
+    it holds RealOsEffects + AllowedCommand + redaction +
+    unredacted-allowlist config type. NOT MockOsEffects, NOT
+    test infrastructure, NOT convenience wrappers.
 
-1. Define `OsEffects` trait + Ro/Rw marker traits per
-   spec §A.1, §A.2. Place under src/effects/os.rs (or
-   similar). All methods listed in §A.1 included. (done)
-2. Implement RealOsEffects per spec §A.3 — std::fs +
-   safe_exec wrappers. Tests for happy-path file IO and
-   safe_exec dispatch. (done)
-3. Implement MockOsEffects per spec §A.3 — in-memory FS
-   keyed by path string, programmable command results,
-   frozen clock, fake env. Declarative seeding from YAML
-   fixtures (the existing spec/0009 fixture format).
-   Tests for every method. (done)
-4. Add no-direct-fs lint test (`tests/no_direct_fs.rs`)
-   per spec §A.6: greps src/**/*.rs for std::fs::,
-   tokio::fs::, fs::File::; allowlists src/effects/*.rs
-   and src/main.rs only. (done)
-5. Migrate every std::fs::* call in src/ outside the
-   allowlist to OsEffects methods (per spec §A.6). Run
-   the lint test after each batch; it's the load-bearing
-   invariant. Includes Project::load_from_dir,
-   Project::write_to_dir, run_tests's tempdir
-   materialization. (done)
-6. Inject OsEffects at the single entry point in
-   src/main.rs per spec §A.4. NO global / NO static / NO
-   thread-local. Every code path that touches the OS
-   takes the handle as a parameter. (done)
-7. Move safe_exec onto OsEffects per spec §A.1: the free
-   function from spec/0014 becomes
-   `OsEffects::safe_exec(&self, cmd: AllowedCommand)`. All
-   call sites updated; src/security/exec.rs houses only
-   the AllowedCommand enum + brand types now (the actual
-   exec lives in RealOsEffects). (done)
-8. Remove the old `key audit add/delete/list/new`
-   subcommands (spec §B.1). Each is replaced by an exit-
-   non-zero migration message naming the new
-   `key audit project edit`-based entry point. Tests:
-   each removed subcommand exits non-zero with a clear
-   error. (done)
-9. Implement `key audit project edit <dir>` as the new
-   live interactive surface (spec §B.2, §B.3): load
-   Project, present the menu with full kebab-case
-   command tokens — help / list / add-control /
-   delete-control / add-fixture / delete-fixture /
-   add-test-entry / delete-test-entry / run-tests /
-   run-audit / save / quit. NO single-letter aliases,
-   NO abbreviations beyond what the Lexical resolver
-   already provides for prefix-unique matches.
-   Drive a top-level `Interaction<LowLevelInput,
-   Project>` with sub-Interactions for the Add*/Delete*
-   dialogs. (done)
-10. Test ops (`t`) and run-audit ops (`r`) per spec §B.3:
-    they don't mutate the Project; they compute a report
-    via Project::run_tests / Project::run_audit_against
-    _filesystem (which now go through OsEffects) and
-    print it inline. (done)
-11. Quit-while-dirty confirmation per spec §B.3 (`q`):
-    asks "discard unsaved changes? [y/N]" if dirty. (done)
-12. Round-trip extension per spec §B.5: every
-    AsmOp sequence over the new top-level surface
-    (including DeleteControl, RunTests, RunAudit, Write,
-    Quit) round-trips correctly. Report ops are
-    observational — round-trip equality compares only
-    the final Project state, not the printed reports. (done)
-13. Migration of in-tree audit fixtures: any fixture or
-    test that relied on the removed single-file
-    subcommands is rewritten to use Projects. If a
-    fixture genuinely makes no sense as a Project, it's
-    deleted with a one-line note in the commit message. (done: scenario_unit + scenario_integ migrated; no other fixtures relied on the removed surfaces.)
-14. `key audit run <dir>` shortcut per spec §B.6: KEEP as
-    thin alias for `key audit project run`. Tests
-    confirm equivalence. (done)
-15. End-to-end test per spec §D: load empty Project →
-    `add-control` CTRL-1 (full Add-Control sub-dialog)
-    → `run-tests` (passes) → `save` → reload → assert
-    Project state matches the edits. Driven via
-    MockOsEffects so the test is hermetic. (done)
-16. Run ./test.sh and confirm PASS. (done)
-17. Run cargo build --release and confirm clean. (done)
-18. Run ci.sh end-to-end LOCALLY (cargo clean → fmt →
-    release build → tests) and confirm clean. (done)
-19. git add -A && git commit -m "key: OsEffects capability handle (Ro/Rw split, mock backend, single injection); project-only audit CLI (audit project edit fdisk-style menu); single-file add/delete/list/new removed". (done)
+0. Restructure src/security/ (per spec §A.0): (done)
+   - keep RealOsEffects, AllowedCommand + brand types,
+     OsEffects trait DEFINITION (the contract);
+   - move MockOsEffects OUT of src/security/ to
+     tests/support/mock_os_effects.rs (or equivalent
+     cfg(test)/test-support location);
+   - update lint allowlists (no-direct-fs / no-direct-exec /
+     the new no-direct-env in step 4) to allow:
+     `src/security/*` AND `src/main.rs` AND `tests/**`.
+
+1. Add `OsEffects::env_vars(&self) -> Vec<(String, String)>` (done)
+   per spec §A.1. RealOsEffects wraps std::env::vars() and
+   sorts ASCII-by-name; MockOsEffects returns the seeded
+   fake env.
+
+2. Migrate src/rules/pseudo.rs <env> materialization to (done)
+   call `effects.env_vars()` instead of `std::env::vars()`.
+
+3. Remove the `env_override: Option<BTreeMap<...>>` test (done)
+   seam per spec §A.2. Migrate every test that used it to
+   the MockOsEffects path (one mechanism, not two).
+
+4. Add no-direct-env lint test (`tests/no_direct_env.rs`) (done)
+   per spec §A.3: greps src/**/*.rs for `std::env::vars`
+   and `std::env::var`; allowlist per step 0.
+
+5. Run the lint; migrate any remaining direct std::env (done)
+   reads to OsEffects until it passes.
+
+6. Implement `redact_value(value, ctx) -> RedactedValue` (done)
+   in src/security/redact.rs (per spec §B.5). Pure; no
+   I/O. `RedactionCtx` carries the unredacted-allowlist
+   plus an optional `name_hint: Option<&str>` for env
+   contexts.
+
+7. Implement Layer 1 (name-based, spec §B.2): substring (done)
+   match (case-insensitive) over the default name list
+   (token/password/passwd/secret/apikey/api_key/
+   private_key/privatekey/pgp/gpg/ssh_key/auth/
+   credential/session/cookie/oauth/bearer/access_key/
+   refresh_key/signing_key/encryption_key). Whitelist:
+   path / http_proxy / https_proxy / no_proxy never
+   redacted by name. Only fires when ctx.name_hint
+   is Some.
+
+8. Implement Layer 2 (value-shape, spec §B.3): regex (done)
+   set covering GitHub PAT (ghp_/github_pat_/gho_),
+   Slack token, AWS access key (AKIA/ASIA), JWT,
+   PEM private-key marker, long-hex (40+).
+
+9. Implement Layer 3 (high-entropy, spec §B.4): length (done)
+   ≥ 20, alpha+digit, Shannon entropy ≥ 4.5 bits/char,
+   not a path. **DEFAULT-ON**, not opt-in. The
+   unredacted-allowlist suppresses false positives.
+
+10. Implement the unredacted-allowlist (spec §B.9): (done)
+    - new type `enum UnredactedMatcher { Value(String),
+      Prefix(String) }` in src/security/unredacted.rs;
+    - sanitizing constructor (no empty literals; no
+      whitespace-only); no regex matchers (literal-only);
+    - `redact_value` returns the value verbatim iff the
+      value matches a Value entry exactly OR starts with
+      a Prefix entry.
+
+11. Wire `redact_value` into EVERY OsEffects read path (done)
+    (spec §B.7):
+    - env_vars() — per-value with name_hint;
+    - read_file(), read_to_string() — line-by-line, no
+      name_hint;
+    - any other byte-returning read.
+
+    Redaction uses the literal pattern "REDACTED42"
+    looped, truncated to the ORIGINAL value length.
+    Alphabet ⊂ base64 ∩ base64url. Reason for redaction
+    goes to debug log only; never in the value.
+
+12. Add the `unredacted:` block to project main.yaml (done)
+    (spec §C.1):
+      unredacted:
+        - value: <literal>
+        - prefix: <literal>
+    Loaded into Project ADT as
+    `unredacted: Vec<UnredactedMatcher>`.
+
+13. Add `AsmOp::AddUnredactedMatcher(UnredactedMatcher)` (done)
+    and `AsmOp::DeleteUnredactedMatcher(UnredactedMatcher)`
+    per spec §C.2. Top-level ops with their own
+    sub-dialogs. New menu commands:
+      add-unredacted-matcher
+      delete-unredacted-matcher
+
+14. OsEffects::new (or constructor) takes the allowlist (done)
+    from the loaded Project and threads it into
+    RedactionCtx (spec §C.5). RealOsEffects holds it
+    immutably for its lifetime; MockOsEffects accepts
+    the same for tests.
+
+15. Add the `looks-like-password` bare-string predicate (done)
+    per spec §B.8: PASSes iff the value (env value or
+    any line of file content) matched at least one
+    redaction rule. Rationale embedded in the spec —
+    "looked secret enough to be redacted".
+
+16. Update the EDSL guide: (done)
+    a) New TERSE-pass section under <env>
+       (security feature; must be visible by default):
+       redaction invariant, worked redacted-body example,
+       `unredacted:` allowlist syntax,
+       `looks-like-password` predicate.
+    b) Add Features (per spec/0011 parent forest):
+       `EnvRedaction` (root), child Features
+       `EnvRedactionByName`, `EnvRedactionByValueShape`,
+       `EnvRedactionByEntropy`. Plus
+       `MutationAddUnredactedMatcher` and
+       `MutationDeleteUnredactedMatcher` (mutation
+       roots). Plus `PredicateLooksLikePassword`.
+       Add ExampleControl per Feature; round-trip via
+       the EDSL → project interpretation.
+
+17. Tests per spec §D: (done)
+    - D.1: redact_value unit tests across every rule
+      + allowlist permutation;
+    - D.2: OsEffects integration via MockOsEffects
+      seeded with token/path/normal vars + content
+      lines; assert the redacted shapes; allowlist
+      suppression test;
+    - D.3: no-direct-env lint passes;
+    - D.4: looks-like-password tests across env and
+      file content;
+    - D.5: round-trip on Projects with
+      AddUnredactedMatcher / DeleteUnredactedMatcher.
+
+18. Run ./test.sh and confirm PASS. (done)
+
+19. Run cargo build --release and confirm clean. (done)
+
+20. Run ci.sh end-to-end LOCALLY (cargo clean → fmt → (done — apt-get and rustup steps skipped: openssh-client / rustfmt already present)
+    release build → tests) and confirm clean.
+
+21. release.sh is in place — DO NOT cut a release here;
+    leave that to the receptionist. Just commit:
+    git add -A && git commit -m "key: redaction at OsEffects boundary (length-preserving REDACTED42-loop, base64 alphabet); unredacted-allowlist as sole opt-out surface; security kernel slimmed to RealOsEffects + AllowedCommand + redaction".

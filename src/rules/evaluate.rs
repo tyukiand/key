@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::effects::OsEffectsRo;
 use crate::rules::ast::{Proposition, RuleFailure};
 use crate::rules::predicates::{evaluate_predicate_subject, Subject};
 use crate::rules::pseudo::EvalContext;
@@ -8,6 +9,23 @@ use crate::rules::pseudo::EvalContext;
 /// Equivalent to evaluating with no pseudo-file overrides.
 pub fn evaluate(proposition: &Proposition, home_dir: &Path) -> Result<(), Vec<RuleFailure>> {
     let ctx = EvalContext::new(home_dir.to_path_buf());
+    evaluate_with_ctx(proposition, &ctx)
+}
+
+/// Evaluate against a home directory using a caller-supplied OsEffects handle.
+/// Spec/0017 §C.5: the project's `unredacted:` allowlist is threaded into a
+/// `RealOsEffects::with_unredacted(...)` at the project-command boundary so
+/// every env / file read funnels through the right redaction context.
+pub fn evaluate_with_os(
+    proposition: &Proposition,
+    home_dir: &Path,
+    os: Box<dyn OsEffectsRo>,
+) -> Result<(), Vec<RuleFailure>> {
+    let ctx = EvalContext::with_fixture_and_os(
+        home_dir.to_path_buf(),
+        crate::rules::ast::PseudoFileFixture::default(),
+        os,
+    );
     evaluate_with_ctx(proposition, &ctx)
 }
 

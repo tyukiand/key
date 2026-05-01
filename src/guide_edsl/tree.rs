@@ -21,6 +21,7 @@ pub fn root() -> GuideNode {
             propositions_section(),
             predicates_section(),
             pseudo_files_section(),
+            env_redaction_section(),
             test_fixtures_section(),
             control_file_section(),
         ],
@@ -562,7 +563,7 @@ fn pseudo_files_section() -> GuideNode {
                        file:\n  path: <executable:docker>\n  check:\n    json-matches:\n      \
                        is-object:\n        found: is-true\n```\n\n\
                        Same applies to `<env>` (always materializes from \
-                       `std::env::vars()` or the env-override map).",
+                       the host environment via `OsEffects::env_vars`).",
                 detail: false,
                 terse_summary: None,
             },
@@ -585,6 +586,123 @@ fn pseudo_files_section() -> GuideNode {
                         message naming both the predicate and the pseudo-file.",
                 detail: true,
                 terse_summary: Some("<executable:NAME> caching + inapplicable-predicate semantics"),
+            },
+        ],
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Spec/0017 — Env redaction & unredacted-allowlist (claims 7 features).
+// TERSE-pass section (`detail: false`): security-critical surface, must be
+// visible in `key audit guide` by default.
+// -----------------------------------------------------------------------------
+
+fn env_redaction_section() -> GuideNode {
+    GuideNode::Section {
+        title: "Env redaction (security-critical default)",
+        detail: false,
+        terse_summary: None,
+        body: vec![
+            GuideNode::Prose {
+                text: "**Invariant: NO sensitive value leaves the OsEffects \
+                       security kernel unredacted.** Every byte that crosses \
+                       the OsEffects boundary \u{2014} env vars, file content, \
+                       any other read \u{2014} is filtered through `redact_value` \
+                       before it reaches a caller. Detection runs three layers \
+                       in turn: variable-name (Layer 1), value-shape regex \
+                       (Layer 2), high-entropy heuristic (Layer 3). Layer 3 \
+                       is **default-on**; the only opt-out surface is the \
+                       project's `unredacted:` allowlist (literal-only).",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::Prose {
+                text: "Worked redacted body \u{2014} a `<env>` snapshot with \
+                       `GITHUB_TOKEN` set:\n\n\
+                       ```text\n\
+                       export GITHUB_TOKEN=REDACTED42REDACTED42REDACTED42REDA\n\
+                       export PATH=/usr/bin\n\
+                       export HOME=/home/u\n\
+                       ```\n\n\
+                       Length is preserved (so length-based regex predicates \
+                       remain stable); the alphabet stays in `[A-Z0-9]` \u{2286} \
+                       base64 \u{2229} base64url so downstream parsers don't \
+                       choke on the redacted payload.",
+                detail: false,
+                terse_summary: None,
+            },
+            GuideNode::Prose {
+                text: "`unredacted:` allowlist syntax (lives in \
+                       `<project>/src/main/unredacted.yaml`):\n\n\
+                       ```yaml\n\
+                       unredacted:\n  - value: ghp_xxxxxxxxxxxxxxxxxxxxxx\n  \
+                       - prefix: sha256:\n  - prefix: img_id_\n```\n\n\
+                       Each entry is `value: <literal>` (exact byte-for-byte \
+                       match) or `prefix: <literal>` (starts-with). No regex; \
+                       literal-only is auditable at a glance.",
+                detail: false,
+                terse_summary: None,
+            },
+            // Layer-1 worked example — claims EnvRedactionByName (and
+            // PseudoFileEnv via the path).
+            GuideNode::ExampleControl {
+                feature: Feature::EnvRedactionByName,
+                expect: ExampleExpect::Pass,
+                detail: false,
+                terse_summary: None,
+                yaml: "controls:\n  - id: REDACT-NAME-EX\n    title: Layer-1 name-based redaction\n    description: \"`<env>` materialization redacts every value whose variable name matches the curated list (token / password / secret / apikey / ...). Whitelist: PATH / *_PROXY.\"\n    remediation: \"never set sensitive values in your shell rc; use a credential helper instead\"\n    check:\n      file:\n        path: \"<env>\"\n        check: file-exists\n",
+            },
+            // Layer-2 worked example — value-shape regex.
+            GuideNode::ExampleControl {
+                feature: Feature::EnvRedactionByValueShape,
+                expect: ExampleExpect::Pass,
+                detail: false,
+                terse_summary: None,
+                yaml: "controls:\n  - id: REDACT-SHAPE-EX\n    title: Layer-2 value-shape redaction\n    description: \"value-shape regex set: GitHub PAT (ghp_/github_pat_/gho_), Slack tokens, AWS access keys (AKIA/ASIA), JWT, PEM private-key markers, long-hex (40+).\"\n    remediation: rotate the leaked credential\n    check:\n      file:\n        path: \"<env>\"\n        check: file-exists\n",
+            },
+            // Layer-3 worked example — high-entropy heuristic.
+            GuideNode::ExampleControl {
+                feature: Feature::EnvRedactionByEntropy,
+                expect: ExampleExpect::Pass,
+                detail: false,
+                terse_summary: None,
+                yaml: "controls:\n  - id: REDACT-ENTROPY-EX\n    title: Layer-3 high-entropy redaction (DEFAULT-ON)\n    description: \"length \u{2265} 20, contains digit AND letter, Shannon entropy \u{2265} 4.5 bits/char, not a path. False positives (git SHAs, container IDs) are opt-out via the `unredacted:` allowlist.\"\n    remediation: \"add the value or prefix to the project's unredacted: list if it is a known non-secret\"\n    check:\n      file:\n        path: \"<env>\"\n        check: file-exists\n",
+            },
+            // PredicateLooksLikePassword worked example.
+            GuideNode::ExampleControl {
+                feature: Feature::PredicateLooksLikePassword,
+                expect: ExampleExpect::Pass,
+                detail: false,
+                terse_summary: None,
+                yaml: "controls:\n  - id: LOOKS-LIKE-PASSWORD-EX\n    title: looks-like-password meta-predicate\n    description: \"PASSes iff at least one env value (or file line) was redacted by the OsEffects boundary filter. Useful as a meta-control: 'every variable named *_TOKEN must look like a password' \u{2014} a sanity check that detection is firing.\"\n    remediation: \"if this FAILs, your detection set may be missing a rule \u{2014} report it\"\n    check:\n      file:\n        path: \"<env>\"\n        check: looks-like-password\n",
+            },
+            // Mutation features — exercised via the project's unredacted list.
+            // Examples are shown as ExampleControls for documentation; the
+            // round-trip property is asserted by tests/project_round_trip.rs
+            // corpus_d_unredacted_round_trip (added by §C.3).
+            GuideNode::ExampleControl {
+                feature: Feature::MutationAddUnredactedMatcher,
+                expect: ExampleExpect::Pass,
+                detail: false,
+                terse_summary: None,
+                yaml: "controls:\n  - id: ADD-UNREDACTED-EX\n    title: \"AsmOp: AddUnredactedMatcher\"\n    description: \"Append a literal opt-out matcher (value or prefix) to the project's unredacted: list. Sub-dialog menu command: `add-unredacted-matcher` in `key audit project edit`.\"\n    remediation: \"prefer prefix matchers (e.g. sha256:) over individual value entries\"\n    check:\n      file:\n        path: \"<env>\"\n        check: file-exists\n",
+            },
+            GuideNode::ExampleControl {
+                feature: Feature::MutationDeleteUnredactedMatcher,
+                expect: ExampleExpect::Pass,
+                detail: false,
+                terse_summary: None,
+                yaml: "controls:\n  - id: DELETE-UNREDACTED-EX\n    title: \"AsmOp: DeleteUnredactedMatcher\"\n    description: \"Remove a previously-added matcher (matched by exact equality). Sub-dialog menu command: `delete-unredacted-matcher` in `key audit project edit`.\"\n    remediation: \"verify nothing in the project still relied on the matcher being present\"\n    check:\n      file:\n        path: \"<env>\"\n        check: file-exists\n",
+            },
+            // Umbrella feature claim — root of the EnvRedaction subtree.
+            GuideNode::FeatureRef {
+                feature: Feature::EnvRedaction,
+                blurb: "OsEffects-boundary redaction kernel \u{2014} length-preserving \
+                        REDACTED42-loop, base64-alphabet, layered detection \
+                        (name / value-shape / entropy), unredacted-allowlist as \
+                        the SOLE opt-out surface. See spec/0017 \u{00a7}B.",
+                detail: false,
+                terse_summary: None,
             },
         ],
     }
@@ -619,19 +737,17 @@ fn test_fixtures_section() -> GuideNode {
                 detail: false,
                 terse_summary: None,
             },
-            // Spec/0013 §A.5 — each override fixture is a self-contained YAML
-            // file showing BOTH `env-overrides:` and `executable-overrides:` in
-            // the same document, with multi-entry maps. The same YAML
-            // round-trips through the production loader (used by the spec/0013
-            // §B emit-project test).
+            // Spec/0017 §A.2 — env loading moved onto `OsEffects::env_vars()`;
+            // the legacy `env-overrides:` fixture key is no longer a valid
+            // top-level. Tests that need a hermetic env construct a
+            // `MockOsEffects` and `set_env(...)` directly. The example
+            // below shows the empty-shell shape that replaces it.
             GuideNode::ExampleFixture {
                 feature: Feature::TestFixtureEnvOverride,
-                // Slug doubles as the materialized fixture-dir name under
-                // src/test/resources/. Keep it stable.
-                name: "env-overrides-multi",
+                name: "env-via-mock-os-effects",
                 detail: true,
-                terse_summary: Some("<env> fixture override YAML (multi-entry, canonical)"),
-                yaml: "# Canonical placement: <project>/src/test/resources/env-overrides-multi/pseudo-file-overrides.yaml\n# Spec/0013 §A.2 — at least three vars to make the map structure visually unambiguous.\nenv-overrides:\n  PATH: \"/usr/bin:/home/u/.cargo/bin\"\n  HOME: \"/home/u\"\n  RUSTUP_HOME: \"/home/u/.rustup\"\n",
+                terse_summary: Some("env seeding moved to MockOsEffects (spec/0017 §A.2)"),
+                yaml: "# Canonical placement: <project>/src/test/resources/env-via-mock-os-effects/pseudo-file-overrides.yaml\n# Spec/0017 §A.2: env-overrides was removed from this YAML surface.\n# Tests seed env via MockOsEffects.set_env(...) instead.\nexecutable-overrides: {}\n",
             },
             GuideNode::ExampleFixture {
                 feature: Feature::TestFixtureExecutableOverride,
@@ -640,15 +756,13 @@ fn test_fixtures_section() -> GuideNode {
                 terse_summary: Some("exec-overrides fixture YAML (multi-entry, all 7 keys)"),
                 yaml: "# Canonical placement: <project>/src/test/resources/executable-overrides-multi/pseudo-file-overrides.yaml\n# Spec/0013 §A.3 — every entry MUST list all 7 keys:\n#   name, found, executable, path, command-full, version-full, version.\n# Spec/0013 §A.2 — at least two entries (here: docker + git) so the map\n# structure is visually unambiguous (it is keyed by NAME).\nexecutable-overrides:\n  docker:\n    name: docker                          # entry id (must match the map key)\n    found: true                           # PATH lookup result\n    executable: true                      # is the resolved file +x\n    path: /usr/bin/docker                 # absolute path on PATH\n    command-full: \"docker --version\"      # the command key invoked\n    version-full: \"Docker version 20.10.7, build f0df350\"  # raw stdout from above\n    version: \"20.10.7\"                    # extracted semver-ish\n  git:\n    name: git                             # second entry — proves the map is plural\n    found: true\n    executable: true\n    path: /usr/bin/git\n    command-full: \"git --version\"\n    version-full: \"git version 2.43.0\"\n    version: \"2.43.0\"\n",
             },
-            // Spec/0013 §A.5 — call out that BOTH sections may live in the
-            // same canonical fixture file. (Separate ExampleFixtures above
-            // keep the per-Feature filter clean; this Prose names the
-            // both-in-one form for completeness.)
+            // Spec/0017 §A.2 — env-overrides was removed; the only fixture
+            // YAML section that survives is `executable-overrides:`.
             GuideNode::Prose {
-                text: "Both sections may live in the same fixture file: \
-                       open with `env-overrides:` and `executable-overrides:` at \
-                       the top level. Either section may be omitted; both forms \
-                       above round-trip through the production loader.",
+                text: "Fixture YAML now carries `executable-overrides:` only \
+                       (spec/0017 §A.2). For env seeding, construct a \
+                       `MockOsEffects` and `set_env(...)`, then thread it via \
+                       `EvalContext::with_fixture_and_os`.",
                 detail: false,
                 terse_summary: None,
             },

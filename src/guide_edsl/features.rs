@@ -70,6 +70,22 @@ pub enum Feature {
     CliAuditTest,
     CliAuditIgnoreFlag,
     CliAuditWarnOnlyFlag,
+
+    // ---------- Spec/0017 §B / §C — env redaction & unredacted-allowlist ----
+    /// Root umbrella Feature for OsEffects-boundary redaction.
+    EnvRedaction,
+    /// Layer 1 — variable-name substring rules.
+    EnvRedactionByName,
+    /// Layer 2 — value-shape regex set.
+    EnvRedactionByValueShape,
+    /// Layer 3 — high-entropy heuristic (DEFAULT-ON).
+    EnvRedactionByEntropy,
+    /// Mutation — append a literal opt-out matcher.
+    MutationAddUnredactedMatcher,
+    /// Mutation — remove a previously-added matcher.
+    MutationDeleteUnredactedMatcher,
+    /// Bare-string predicate `looks-like-password`.
+    PredicateLooksLikePassword,
 }
 
 impl Feature {
@@ -124,11 +140,18 @@ impl Feature {
             CliAuditTest,
             CliAuditIgnoreFlag,
             CliAuditWarnOnlyFlag,
+            EnvRedaction,
+            EnvRedactionByName,
+            EnvRedactionByValueShape,
+            EnvRedactionByEntropy,
+            MutationAddUnredactedMatcher,
+            MutationDeleteUnredactedMatcher,
+            PredicateLooksLikePassword,
         ]
     }
 
     /// Total count of distinct features.
-    pub const COUNT: usize = 47;
+    pub const COUNT: usize = 54;
 
     /// Optional parent. Roots return `None`.
     pub fn parent(self) -> Option<Feature> {
@@ -159,6 +182,18 @@ impl Feature {
             // CLI run flags sit under `key audit run`.
             CliAuditIgnoreFlag => Some(CliAuditRun),
             CliAuditWarnOnlyFlag => Some(CliAuditRun),
+
+            // Spec/0017 — EnvRedaction subtree under PseudoFileEnv (the
+            // surface that benefits most), with detection layers as children
+            // of the EnvRedaction root. Mutation roots sit at the top level
+            // (no Mutation* root yet exists).
+            EnvRedaction => Some(PseudoFileEnv),
+            EnvRedactionByName => Some(EnvRedaction),
+            EnvRedactionByValueShape => Some(EnvRedaction),
+            EnvRedactionByEntropy => Some(EnvRedaction),
+            MutationAddUnredactedMatcher => None,
+            MutationDeleteUnredactedMatcher => None,
+            PredicateLooksLikePassword => None,
 
             _ => None,
         }
@@ -219,6 +254,13 @@ impl Feature {
             CliAuditTest => "CliAuditTest",
             CliAuditIgnoreFlag => "CliAuditIgnoreFlag",
             CliAuditWarnOnlyFlag => "CliAuditWarnOnlyFlag",
+            EnvRedaction => "EnvRedaction",
+            EnvRedactionByName => "EnvRedactionByName",
+            EnvRedactionByValueShape => "EnvRedactionByValueShape",
+            EnvRedactionByEntropy => "EnvRedactionByEntropy",
+            MutationAddUnredactedMatcher => "MutationAddUnredactedMatcher",
+            MutationDeleteUnredactedMatcher => "MutationDeleteUnredactedMatcher",
+            PredicateLooksLikePassword => "PredicateLooksLikePassword",
         }
     }
 
@@ -276,6 +318,13 @@ impl Feature {
             CliAuditTest => "audit-test",
             CliAuditIgnoreFlag => "ignore-flag",
             CliAuditWarnOnlyFlag => "warn-only-flag",
+            EnvRedaction => "env-redaction",
+            EnvRedactionByName => "env-redaction-by-name",
+            EnvRedactionByValueShape => "env-redaction-by-value-shape",
+            EnvRedactionByEntropy => "env-redaction-by-entropy",
+            MutationAddUnredactedMatcher => "add-unredacted-matcher",
+            MutationDeleteUnredactedMatcher => "delete-unredacted-matcher",
+            PredicateLooksLikePassword => "looks-like-password",
         }
     }
 

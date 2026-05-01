@@ -26,12 +26,18 @@ fn ctx_with(
     env: Option<BTreeMap<String, String>>,
     exes: Option<BTreeMap<String, ExecutableSnapshot>>,
 ) -> EvalContext {
-    EvalContext::with_fixture(
+    let mock = crate::test_support::mock_os_effects::MockOsEffects::new();
+    if let Some(env) = env {
+        for (k, v) in env {
+            mock.set_env(&k, v);
+        }
+    }
+    EvalContext::with_fixture_and_os(
         empty_home(),
         PseudoFileFixture {
-            env_override: env,
             executable_override: exes,
         },
+        Box::new(mock),
     )
 }
 
@@ -505,9 +511,10 @@ executable-overrides:
 
 #[test]
 fn fixture_round_trip_drives_evaluator() {
+    // Spec/0017 §A.2: env seeding is now via MockOsEffects, not a YAML
+    // `env-overrides:` block. The fixture YAML carries the executable
+    // override only.
     let yaml = r#"
-env-overrides:
-  TEST_FIXTURE_OK: "1"
 executable-overrides:
   docker:
     name: docker
@@ -519,7 +526,9 @@ executable-overrides:
     version: "20.10.7"
 "#;
     let fixture = parse_fixture(yaml).unwrap();
-    let ctx = EvalContext::with_fixture(empty_home(), fixture);
+    let mock = crate::test_support::mock_os_effects::MockOsEffects::new();
+    mock.set_env("TEST_FIXTURE_OK", "1");
+    let ctx = EvalContext::with_fixture_and_os(empty_home(), fixture, Box::new(mock));
 
     let prop = Proposition::All(vec![
         Proposition::FileSatisfies {

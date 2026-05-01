@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
-use crate::effects::{OsEffectsRw, RealOsEffects};
+use crate::effects::{OsEffectsRo, OsEffectsRw, RealOsEffects};
 use crate::rules::ast::{ExecutableSnapshot, PseudoFile, PseudoFileFixture};
 use crate::security::exec::{
     AllowedCommand, AllowedExecutableName, AllowedExecutablePath, AllowedVersionFlag,
@@ -29,31 +29,63 @@ use crate::security::exec::{
 // EvalContext: per-audit-run state, including pseudo-file cache (spec §1.4, §3.7)
 // ---------------------------------------------------------------------------
 
-/// Per-audit-run context. Holds overrides plus a cache of materialized
-/// pseudo-files so each `<env>` / `<executable:NAME>` is resolved at most once
-/// per run (spec §1.4, §3.7).
+/// Per-audit-run context. Owns an OsEffectsRo handle (spec/0017 §A.1) so
+/// `<env>` materialization can route through `os.env_vars()` and pick up
+/// the redaction filter. Holds the executable-override fixture plus a
+/// cache of materialized pseudo-files so each `<env>` / `<executable:NAME>`
+/// is resolved at most once per run (spec §1.4, §3.7).
 pub struct EvalContext {
     pub home_dir: PathBuf,
     pub fixture: PseudoFileFixture,
     cache: RefCell<BTreeMap<PseudoFile, PseudoSnapshot>>,
+    os: Box<dyn OsEffectsRo>,
 }
 
 impl EvalContext {
+    /// Production constructor: wraps the host OS via a default `RealOsEffects`
+    /// (empty unredacted-allowlist).
     pub fn new(home_dir: PathBuf) -> Self {
         EvalContext {
             home_dir,
             fixture: PseudoFileFixture::default(),
             cache: RefCell::new(BTreeMap::new()),
+            os: Box::new(RealOsEffects::new()),
         }
     }
 
+    /// Production constructor with an `executable_override` fixture; uses the
+    /// default `RealOsEffects` for env access.
     #[allow(dead_code)]
     pub fn with_fixture(home_dir: PathBuf, fixture: PseudoFileFixture) -> Self {
         EvalContext {
             home_dir,
             fixture,
             cache: RefCell::new(BTreeMap::new()),
+            os: Box::new(RealOsEffects::new()),
         }
+    }
+
+    /// Test/project constructor — pass a custom OsEffects (e.g.
+    /// `MockOsEffects` in tests; a `RealOsEffects::with_unredacted(...)` in
+    /// the live `key audit project run` flow).
+    #[allow(dead_code)]
+    pub fn with_fixture_and_os(
+        home_dir: PathBuf,
+        fixture: PseudoFileFixture,
+        os: Box<dyn OsEffectsRo>,
+    ) -> Self {
+        EvalContext {
+            home_dir,
+            fixture,
+            cache: RefCell::new(BTreeMap::new()),
+            os,
+        }
+    }
+
+    /// Borrow the underlying `OsEffectsRo` (used by predicates that read
+    /// concrete file paths so reads go through the redaction filter).
+    pub fn os(&self) -> &dyn OsEffectsRo {
+        self.os.as_ref()
     }
 
     /// Resolve a pseudo-file (cached for the lifetime of this context).
@@ -62,9 +94,9 @@ impl EvalContext {
             return s.clone();
         }
         let snap = match pseudo {
-            PseudoFile::Env => materialize_env(self.fixture.env_override.as_ref()),
+            PseudoFile::Env => materialize_env(self.os()),
             PseudoFile::Executable(name) => {
-                materialize_executable(name, self.fixture.executable_override.as_ref())
+                materialize_executable(name, self.fixture.executable_override.as_ref(), self.os())
             }
         };
         self.cache.borrow_mut().insert(pseudo.clone(), snap.clone());
@@ -100,12 +132,11 @@ pub enum PseudoKind {
 // <env> materialization (spec §2.1–§2.2)
 // ---------------------------------------------------------------------------
 
-/// Build the `<env>` snapshot from either an override map or `std::env::vars()`.
-pub fn materialize_env(override_map: Option<&BTreeMap<String, String>>) -> PseudoSnapshot {
-    let env_map: BTreeMap<String, String> = match override_map {
-        Some(m) => m.clone(),
-        None => std::env::vars().collect(),
-    };
+/// Build the `<env>` snapshot via `OsEffectsRo::env_vars()` (spec/0017 §A.1).
+/// Each value is already redaction-filtered at the OsEffects boundary, so the
+/// rendered body never carries an unredacted secret (spec/0017 §B.7).
+pub fn materialize_env(os: &dyn OsEffectsRo) -> PseudoSnapshot {
+    let env_map: BTreeMap<String, String> = os.env_vars().into_iter().collect();
 
     // Sorted ASCII-by-name `export NAME=VALUE` body, escaped per §2.2.
     let mut body = String::new();
@@ -151,6 +182,7 @@ const MAX_VERSION_LINES: usize = 16;
 fn materialize_executable(
     name: &str,
     override_map: Option<&BTreeMap<String, ExecutableSnapshot>>,
+    os: &dyn OsEffectsRo,
 ) -> PseudoSnapshot {
     // Override path is total: missing NAMEs ⇒ found=false. (§3.8)
     if let Some(map) = override_map {
@@ -166,7 +198,7 @@ fn materialize_executable(
     }
 
     // PATH resolution
-    let path = which_on_path(name);
+    let path = which_on_path(name, os);
     let path = match path {
         None => {
             let snap = ExecutableSnapshot::not_found(name);
@@ -180,7 +212,7 @@ fn materialize_executable(
     };
 
     // is_executable (mode bits)
-    let executable = is_executable_file(&path);
+    let executable = is_executable_file(&path, os);
     if !executable {
         let snap = ExecutableSnapshot {
             name: name.to_string(),
@@ -282,23 +314,21 @@ pub fn render_executable_json(snap: &ExecutableSnapshot) -> String {
     serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn which_on_path(name: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
+fn which_on_path(name: &str, os: &dyn OsEffectsRo) -> Option<PathBuf> {
+    let path_var = os.env_var("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         if dir.as_os_str().is_empty() {
             continue;
         }
         let candidate = dir.join(name);
-        if candidate.is_file() {
+        if os.metadata(&candidate).map(|m| m.is_file).unwrap_or(false) {
             return Some(candidate);
         }
     }
     None
 }
 
-fn is_executable_file(path: &std::path::Path) -> bool {
-    use crate::effects::OsEffectsRo;
-    let os = RealOsEffects;
+fn is_executable_file(path: &std::path::Path, os: &dyn OsEffectsRo) -> bool {
     match os.metadata(path) {
         Ok(md) => match md.unix_mode {
             Some(mode) => md.is_file && (mode & 0o111) != 0,
@@ -314,7 +344,7 @@ fn run_probe(name: &str, path: &Path, flag: &str) -> Option<String> {
     let exe_name = AllowedExecutableName::new(name).ok()?;
     let exe_path = AllowedExecutablePath::new(path).ok()?;
     let version_flag = AllowedVersionFlag::new(flag).ok()?;
-    let os = RealOsEffects;
+    let os = RealOsEffects::new();
     let result = os.safe_exec(AllowedCommand::ProbeVersionGeneric {
         exe_name,
         exe_path,
@@ -952,12 +982,12 @@ mod tests {
     }
 
     #[test]
-    fn materialize_env_sorted_with_override() {
-        let mut m = BTreeMap::new();
-        m.insert("ZED".to_string(), "1".to_string());
-        m.insert("ABC".to_string(), "x\ny".to_string());
-        let snap = materialize_env(Some(&m));
-        // sorted ascending
+    fn materialize_env_sorted_via_mock_os_effects() {
+        let mock = crate::test_support::mock_os_effects::MockOsEffects::new();
+        mock.set_env("ZED", "1");
+        mock.set_env("ABC", "x\ny");
+        let snap = materialize_env(&mock);
+        // sorted ascending; \n is escaped per §2.2.
         assert_eq!(snap.body, "export ABC=x\\ny\nexport ZED=1\n");
     }
 

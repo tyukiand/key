@@ -28,6 +28,7 @@ use crate::rules::ast::{
     validate_control_id, Control, FilePredicateAst, Proposition, SimplePath, TestCase,
     TestExpectation,
 };
+use crate::security::unredacted::UnredactedMatcher;
 
 /// Top-level entry point for `key audit project edit <dir>`.
 pub fn project_edit(dir: &Path, fx: &dyn Effects, os: &dyn OsEffectsRw) -> Result<()> {
@@ -93,6 +94,22 @@ pub fn project_edit(dir: &Path, fx: &dyn Effects, os: &dyn OsEffectsRw) -> Resul
                 }
                 None => fx.println("(cancelled)"),
             },
+            "add-unredacted-matcher" => match add_unredacted_matcher_dialog(fx, project.clone())? {
+                Some(p) => {
+                    project = p;
+                    dirty = true;
+                }
+                None => fx.println("(cancelled)"),
+            },
+            "delete-unredacted-matcher" => {
+                match delete_unredacted_matcher_dialog(fx, project.clone())? {
+                    Some(p) => {
+                        project = p;
+                        dirty = true;
+                    }
+                    None => fx.println("(cancelled)"),
+                }
+            }
             "run-tests" => print_tests_report(fx, &project, os),
             "run-audit" => print_audit_report(fx, &project),
             "save" => {
@@ -133,6 +150,14 @@ fn top_level_options() -> Vec<MenuOption> {
         MenuOption::new("delete-fixture", "delete a fixture by name"),
         MenuOption::new("add-test-entry", "add a test entry"),
         MenuOption::new("delete-test-entry", "delete a test entry"),
+        MenuOption::new(
+            "add-unredacted-matcher",
+            "append a literal opt-out matcher (value or prefix)",
+        ),
+        MenuOption::new(
+            "delete-unredacted-matcher",
+            "remove a previously-added matcher",
+        ),
         MenuOption::new("run-tests", "run in-memory tests"),
         MenuOption::new("run-audit", "run audit against host FS"),
         MenuOption::new("save", "write project to disk"),
@@ -185,6 +210,14 @@ fn print_project(fx: &dyn Effects, p: &Project) {
                     }
                 ));
             }
+        }
+    }
+    fx.println("Unredacted matchers:");
+    if p.unredacted.is_empty() {
+        fx.println("  (none)");
+    } else {
+        for m in &p.unredacted {
+            fx.println(&format!("  {}: {}", m.kind(), m.literal()));
         }
     }
 }
@@ -496,6 +529,85 @@ fn delete_test_entry_dialog(fx: &dyn Effects, project: Project) -> Result<Option
         Ok(p) => Ok(Some(p)),
         Err(e) => {
             fx.println(&format!("delete-test-entry failed: {}", e));
+            Ok(None)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec/0017 §C.2 — Add/DeleteUnredactedMatcher dialogs.
+// ---------------------------------------------------------------------------
+
+fn matcher_kind_options() -> Vec<MenuOption> {
+    vec![
+        MenuOption::new("value", "exact-value literal opt-out"),
+        MenuOption::new("prefix", "starts-with literal opt-out"),
+    ]
+}
+
+fn add_unredacted_matcher_dialog(fx: &dyn Effects, project: Project) -> Result<Option<Project>> {
+    let kind = match prompt_pick(fx, "matcher kind", matcher_kind_options())? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let literal = match prompt_text(fx, "literal", FreeKind::Text)? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let matcher = match kind.as_str() {
+        "value" => UnredactedMatcher::value(literal),
+        "prefix" => UnredactedMatcher::prefix(literal),
+        _ => return Ok(None),
+    };
+    let matcher = match matcher {
+        Ok(m) => m,
+        Err(e) => {
+            fx.println(&format!("invalid matcher: {}", e));
+            return Ok(None);
+        }
+    };
+    match project.apply_mutation(ProjectMutation::AddUnredactedMatcher { matcher }) {
+        Ok(p) => Ok(Some(p)),
+        Err(e) => {
+            fx.println(&format!("add-unredacted-matcher failed: {}", e));
+            Ok(None)
+        }
+    }
+}
+
+fn delete_unredacted_matcher_dialog(fx: &dyn Effects, project: Project) -> Result<Option<Project>> {
+    if project.unredacted.is_empty() {
+        fx.println("(no unredacted matchers to delete)");
+        return Ok(None);
+    }
+    let opts: Vec<MenuOption> = project
+        .unredacted
+        .iter()
+        .map(|m| {
+            let tag = format!("{}:{}", m.kind(), m.literal());
+            MenuOption::new(tag.clone(), tag)
+        })
+        .collect();
+    let chosen = match prompt_pick(fx, "matcher to delete", opts)? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let mut parts = chosen.splitn(2, ':');
+    let kind = parts.next().unwrap_or("");
+    let literal = parts.next().unwrap_or("");
+    let matcher = match kind {
+        "value" => UnredactedMatcher::value(literal.to_string()),
+        "prefix" => UnredactedMatcher::prefix(literal.to_string()),
+        _ => return Ok(None),
+    };
+    let matcher = match matcher {
+        Ok(m) => m,
+        Err(e) => bail!("invalid matcher: {}", e),
+    };
+    match project.apply_mutation(ProjectMutation::DeleteUnredactedMatcher { matcher }) {
+        Ok(p) => Ok(Some(p)),
+        Err(e) => {
+            fx.println(&format!("delete-unredacted-matcher failed: {}", e));
             Ok(None)
         }
     }

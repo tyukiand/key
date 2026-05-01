@@ -26,6 +26,7 @@ use crate::rules::fixture::parse_fixture_collect_warnings;
 use crate::rules::generate::{generate_control_file, generate_test_file};
 use crate::rules::parse::{parse_control_file, parse_test_file};
 use crate::rules::pseudo::EvalContext;
+use crate::security::unredacted::UnredactedMatcher;
 
 // ---------------------------------------------------------------------------
 // Branded names (spec §1.1) — newtypes ensuring stable lexical/file identity.
@@ -222,6 +223,11 @@ pub struct Project {
     pub fixtures: BTreeMap<FixtureFileName, FixtureFile>,
     pub tests: TestsYaml,
     pub meta: ProjectMeta,
+    /// Spec/0017 §C.1 — opt-out list for OsEffects redaction. Each matcher
+    /// is either an exact-value or prefix literal. Threaded into
+    /// `RealOsEffects::with_unredacted` at the single injection point in
+    /// `main.rs` (spec/0017 §C.5).
+    pub unredacted: Vec<UnredactedMatcher>,
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +245,8 @@ pub enum ProjectMutationError {
     DanglingControl(String),
     DanglingFixture(String),
     InvalidName(ProjectNameError),
+    DuplicateUnredactedMatcher(String),
+    NotFoundUnredactedMatcher(String),
 }
 
 impl fmt::Display for ProjectMutationError {
@@ -275,6 +283,12 @@ impl fmt::Display for ProjectMutationError {
                 s
             ),
             ProjectMutationError::InvalidName(e) => write!(f, "{}", e),
+            ProjectMutationError::DuplicateUnredactedMatcher(s) => {
+                write!(f, "unredacted matcher already present: {}", s)
+            }
+            ProjectMutationError::NotFoundUnredactedMatcher(s) => {
+                write!(f, "unredacted matcher not found: {}", s)
+            }
         }
     }
 }
@@ -423,6 +437,37 @@ impl Project {
             .collect()
     }
 
+    /// Spec/0017 §C.2 — append a literal opt-out matcher to the project's
+    /// allowlist. Errors on exact-equality duplicates.
+    pub fn with_unredacted_matcher_added(
+        mut self,
+        matcher: UnredactedMatcher,
+    ) -> Result<Project, ProjectMutationError> {
+        if self.unredacted.iter().any(|m| m == &matcher) {
+            return Err(ProjectMutationError::DuplicateUnredactedMatcher(
+                matcher_label(&matcher),
+            ));
+        }
+        self.unredacted.push(matcher);
+        Ok(self)
+    }
+
+    /// Spec/0017 §C.2 — remove the first matcher equal to `matcher`.
+    pub fn with_unredacted_matcher_deleted(
+        mut self,
+        matcher: &UnredactedMatcher,
+    ) -> Result<Project, ProjectMutationError> {
+        let idx = self
+            .unredacted
+            .iter()
+            .position(|m| m == matcher)
+            .ok_or_else(|| {
+                ProjectMutationError::NotFoundUnredactedMatcher(matcher_label(matcher))
+            })?;
+        self.unredacted.remove(idx);
+        Ok(self)
+    }
+
     /// Returns the (file_name, control_id) → owning control-file-name map.
     pub fn find_control_file_for_id(&self, id: &str) -> Option<&ControlFileName> {
         for (name, cf) in &self.controls {
@@ -474,6 +519,7 @@ impl Project {
         }
 
         let mut controls: BTreeMap<ControlFileName, ControlFile> = BTreeMap::new();
+        let mut unredacted: Vec<UnredactedMatcher> = Vec::new();
         for entry in fx
             .read_dir_entries(&main_dir)
             .with_context(|| format!("reading {}", main_dir.display()))?
@@ -485,6 +531,16 @@ impl Project {
             } else {
                 continue;
             };
+            // Spec/0017 §C.1 — `<dir>/src/main/unredacted.yaml` carries the
+            // project-level opt-out allowlist. It is NOT a control file.
+            if stem == "unredacted" {
+                let content = fx
+                    .read_file_string(&entry.path)
+                    .with_context(|| format!("reading {}", entry.path.display()))?;
+                unredacted = parse_unredacted_yaml(&content)
+                    .with_context(|| format!("parsing {}", entry.path.display()))?;
+                continue;
+            }
             let content = fx
                 .read_file_string(&entry.path)
                 .with_context(|| format!("reading {}", entry.path.display()))?;
@@ -540,6 +596,7 @@ impl Project {
             fixtures,
             tests,
             meta,
+            unredacted,
         })
     }
 
@@ -553,6 +610,17 @@ impl Project {
             let path = main_dir.join(format!("{}.yaml", name.as_str()));
             fx.write_file(&path, generate_control_file(cf).as_bytes())
                 .with_context(|| format!("writing {}", path.display()))?;
+        }
+        // Spec/0017 §C.1 — emit `<dir>/src/main/unredacted.yaml` when the
+        // project carries a non-empty allowlist; omit the file otherwise so
+        // empty projects round-trip without a stub.
+        if !self.unredacted.is_empty() {
+            let path = main_dir.join("unredacted.yaml");
+            fx.write_file(
+                &path,
+                serialize_unredacted_yaml(&self.unredacted).as_bytes(),
+            )
+            .with_context(|| format!("writing {}", path.display()))?;
         }
 
         let test_dir = dir.join("src/test");
@@ -591,6 +659,94 @@ impl Project {
         }
         Ok(())
     }
+}
+
+/// Format a matcher for diagnostic strings (used by mutation errors).
+fn matcher_label(m: &UnredactedMatcher) -> String {
+    match m {
+        UnredactedMatcher::Value(v) => format!("value:{}", v),
+        UnredactedMatcher::Prefix(p) => format!("prefix:{}", p),
+    }
+}
+
+/// Parse the `unredacted.yaml` schema (spec/0017 §B.9, §C.1):
+///
+/// ```yaml
+/// unredacted:
+///   - value: <literal>
+///   - prefix: <literal>
+/// ```
+fn parse_unredacted_yaml(yaml: &str) -> Result<Vec<UnredactedMatcher>> {
+    use serde_yaml::Value;
+    let doc: Value = serde_yaml::from_str(yaml).map_err(|e| anyhow!("invalid YAML: {}", e))?;
+    let map = doc
+        .as_mapping()
+        .ok_or_else(|| anyhow!("unredacted.yaml top-level must be a mapping"))?;
+    let list = match map.get(Value::String("unredacted".into())) {
+        Some(Value::Sequence(s)) => s,
+        Some(Value::Null) | None => return Ok(Vec::new()),
+        Some(other) => bail!("`unredacted:` must be a sequence, got {:?}", other),
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, entry) in list.iter().enumerate() {
+        let m = entry
+            .as_mapping()
+            .ok_or_else(|| anyhow!("unredacted[{}]: each entry must be a mapping", i))?;
+        if m.len() != 1 {
+            bail!(
+                "unredacted[{}]: each entry must have exactly one key (`value:` or `prefix:`)",
+                i
+            );
+        }
+        let (k, v) = m.iter().next().unwrap();
+        let key = k
+            .as_str()
+            .ok_or_else(|| anyhow!("unredacted[{}]: key must be a string", i))?;
+        let lit = v
+            .as_str()
+            .ok_or_else(|| anyhow!("unredacted[{}]: literal must be a string", i))?
+            .to_string();
+        let matcher = match key {
+            "value" => UnredactedMatcher::value(lit),
+            "prefix" => UnredactedMatcher::prefix(lit),
+            other => bail!(
+                "unredacted[{}]: unknown matcher kind {:?} (expected `value` or `prefix`)",
+                i,
+                other
+            ),
+        }
+        .map_err(|e| anyhow!("unredacted[{}]: {}", i, e))?;
+        out.push(matcher);
+    }
+    Ok(out)
+}
+
+/// Round-trip-stable serializer for `unredacted.yaml`. Order is preserved
+/// from the in-memory `Vec` so AsmOp replay reconstructs the exact file.
+fn serialize_unredacted_yaml(matchers: &[UnredactedMatcher]) -> String {
+    let mut out = String::from("unredacted:\n");
+    for m in matchers {
+        let (kind, lit) = match m {
+            UnredactedMatcher::Value(v) => ("value", v),
+            UnredactedMatcher::Prefix(p) => ("prefix", p),
+        };
+        // Always quote the literal so weird inputs (leading dashes, colons,
+        // booleans-shaped strings) don't get re-interpreted as YAML scalars.
+        out.push_str("  - ");
+        out.push_str(kind);
+        out.push_str(": ");
+        out.push_str(&yaml_quote(lit));
+        out.push('\n');
+    }
+    out
+}
+
+fn yaml_quote(s: &str) -> String {
+    // Single-quoted YAML: backslashes are literal; embedded single quotes
+    // double up. No newlines / control chars supported (matchers reject
+    // whitespace-only and we'll emit a one-line literal).
+    let escaped = s.replace('\'', "''");
+    format!("'{}'", escaped)
 }
 
 fn load_fixture_dir(dir: &Path, fx: &dyn Effects) -> Result<FixtureFile> {
@@ -636,17 +792,11 @@ fn walk_fixture(root: &Path, cur: &Path, ff: &mut FixtureFile, fx: &dyn Effects)
 
 /// Round-trip-stable serialization of pseudo-file overrides. Matches the
 /// `parse_fixture_collect_warnings` accept-set: a YAML mapping with optional
-/// `env` (mapping of NAME→VALUE) and `executable` (mapping of NAME→snapshot).
+/// `executable-overrides` (mapping of NAME→snapshot). Env overrides were
+/// removed by spec/0017 §A.2 — env loading goes through `OsEffects::env_vars()`.
 fn serialize_pseudo_overrides(po: &PseudoFileFixture) -> String {
     use serde_yaml::{Mapping, Value};
     let mut top = Mapping::new();
-    if let Some(env) = &po.env_override {
-        let mut m = Mapping::new();
-        for (k, v) in env {
-            m.insert(Value::String(k.clone()), Value::String(v.clone()));
-        }
-        top.insert(Value::String("env".into()), Value::Mapping(m));
-    }
     if let Some(execs) = &po.executable_override {
         let mut m = Mapping::new();
         for (name, snap) in execs {
@@ -810,6 +960,9 @@ impl Project {
 
     /// Run every control against the real host filesystem rooted at `home`.
     /// Pseudo-file overrides remain test-only; the live audit uses the host.
+    /// Spec/0017 §C.5: the project's `unredacted:` allowlist is threaded
+    /// through a fresh `RealOsEffects::with_unredacted(...)` per control so
+    /// every env / file read funnels through the right redaction context.
     pub fn run_audit_against_filesystem(
         &self,
         home: &Path,
@@ -822,7 +975,10 @@ impl Project {
                 continue;
             }
             let is_warn = warn_only.contains(&c.id);
-            match evaluate(&c.check, home) {
+            let os: Box<dyn crate::effects::OsEffectsRo> = Box::new(
+                crate::effects::RealOsEffects::with_unredacted(self.unredacted.clone()),
+            );
+            match crate::rules::evaluate::evaluate_with_os(&c.check, home, os) {
                 Ok(()) => report.passed += 1,
                 Err(failures) => {
                     if is_warn {
@@ -916,6 +1072,15 @@ pub enum ProjectMutation {
         control_id: String,
         fixture: String,
     },
+    /// Spec/0017 §C.2 — append a literal opt-out matcher.
+    AddUnredactedMatcher {
+        matcher: UnredactedMatcher,
+    },
+    /// Spec/0017 §C.2 — remove a previously-added matcher (matched by exact
+    /// equality).
+    DeleteUnredactedMatcher {
+        matcher: UnredactedMatcher,
+    },
     /// Spec/0016 §B.5 — observational op: compute TestsReport, print, leave
     /// project unchanged. Round-trip ignores the printed report; final state
     /// equality is what matters.
@@ -968,6 +1133,13 @@ impl Project {
                 control_id,
                 fixture,
             } => self.with_test_entry_deleted(&suite, &control_id, &fixture),
+            // Spec/0017 §C.2 — append/remove unredacted matchers.
+            ProjectMutation::AddUnredactedMatcher { matcher } => {
+                self.with_unredacted_matcher_added(matcher)
+            }
+            ProjectMutation::DeleteUnredactedMatcher { matcher } => {
+                self.with_unredacted_matcher_deleted(&matcher)
+            }
             // Spec/0016 §B.5 — observational ops leave Project state untouched.
             ProjectMutation::RunTests => Ok(self),
             ProjectMutation::RunAudit => Ok(self),
@@ -1025,6 +1197,13 @@ pub fn compile_project(p: &Project) -> Vec<ProjectMutation> {
                 tc: tc.clone(),
             });
         }
+    }
+    // Spec/0017 §C.2/§C.3 — replay unredacted matchers in their stored order so
+    // the round-trip rebuilds the project's allowlist verbatim.
+    for matcher in &p.unredacted {
+        ops.push(ProjectMutation::AddUnredactedMatcher {
+            matcher: matcher.clone(),
+        });
     }
     ops.push(ProjectMutation::Done);
     ops
@@ -1259,7 +1438,7 @@ mod tests {
             .unwrap();
 
         use crate::effects::{OsEffectsRw, RealEffects, RealOsEffects};
-        let os = RealOsEffects;
+        let os = RealOsEffects::new();
         let fx = RealEffects;
         let td = os.make_tempdir().unwrap();
         let dir = td.path();
@@ -1311,7 +1490,7 @@ mod tests {
             )
             .unwrap();
 
-        let os = crate::effects::RealOsEffects;
+        let os = crate::effects::RealOsEffects::new();
         let report = p.run_tests(&os).unwrap();
         assert_eq!(report.passed, 1);
         assert_eq!(report.failed, 0);
@@ -1354,7 +1533,7 @@ mod tests {
             )
             .unwrap();
 
-        let os = crate::effects::RealOsEffects;
+        let os = crate::effects::RealOsEffects::new();
         let report = p.run_tests(&os).unwrap();
         assert_eq!(report.passed, 0);
         assert_eq!(report.failed, 1);
@@ -1400,7 +1579,7 @@ mod tests {
             )
             .unwrap();
 
-        let os = crate::effects::RealOsEffects;
+        let os = crate::effects::RealOsEffects::new();
         let report = p.run_tests(&os).unwrap();
         assert_eq!(report.passed, 1);
         assert_eq!(report.failed, 0);

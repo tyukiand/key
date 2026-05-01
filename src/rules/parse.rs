@@ -237,6 +237,19 @@ fn parse_predicate_kv(key: &str, value: &Value) -> Result<FilePredicateAst> {
             let schema = parse_data_schema(value).context("parsing yaml-matches data schema")?;
             Ok(FilePredicateAst::YamlMatches(schema))
         }
+        // Spec/0017 §B.8 — bare-string predicate. Accepts the bare key with
+        // a `null`/empty value, since it carries no parameter.
+        "looks-like-password" => {
+            if let Some(s) = value.as_str() {
+                if !s.is_empty() {
+                    bail!(
+                        "looks-like-password takes no value (it is a bare predicate); got {:?}",
+                        s
+                    );
+                }
+            }
+            Ok(FilePredicateAst::LooksLikePassword)
+        }
         "all" => {
             let seq = value
                 .as_sequence()
@@ -285,8 +298,8 @@ fn parse_predicate_kv(key: &str, value: &Value) -> Result<FilePredicateAst> {
         _ => bail!(
             "Unknown predicate key: {:?}. Valid keys: file-exists, text-matches, \
              text-contains, text-has-lines, shell-exports, shell-defines, shell-adds-to-path, \
-             properties-defines-key, xml-matches, json-matches, yaml-matches, all, any, \
-             not, conditionally",
+             properties-defines-key, xml-matches, json-matches, yaml-matches, \
+             looks-like-password, all, any, not, conditionally",
             key,
         ),
     }
@@ -295,16 +308,15 @@ fn parse_predicate_kv(key: &str, value: &Value) -> Result<FilePredicateAst> {
 /// Parse a serde_yaml::Value as a FilePredicateAst.
 pub fn parse_predicate(value: &Value) -> Result<FilePredicateAst> {
     match value {
-        Value::String(s) => {
-            if s == "file-exists" {
-                Ok(FilePredicateAst::FileExists)
-            } else {
-                bail!(
-                    "Unknown bare predicate string: {:?}. Only 'file-exists' can appear as a bare string.",
-                    s
-                )
-            }
-        }
+        Value::String(s) => match s.as_str() {
+            "file-exists" => Ok(FilePredicateAst::FileExists),
+            "looks-like-password" => Ok(FilePredicateAst::LooksLikePassword),
+            _ => bail!(
+                "Unknown bare predicate string: {:?}. Only 'file-exists' and \
+                 'looks-like-password' can appear as bare strings.",
+                s
+            ),
+        },
         Value::Mapping(m) => {
             if m.is_empty() {
                 bail!("Empty mapping is not a valid predicate");
